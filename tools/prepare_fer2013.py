@@ -21,39 +21,54 @@ EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def find_dataset_root(root: Path) -> Path:
-    """Find a train/test pair in Kaggle or local unzipped folders.
+    """Find FER2013 train/test directories across both Kaggle mount layouts.
 
-    Kaggle may mount a public dataset below a changed slug, or add one wrapper.
-    Never silently choose a directory if more than one matches.
+    Older Kaggle kernels mount `/kaggle/input/fer2013/train`; recent kernels
+    may use `/kaggle/input/datasets/msambare/fer2013/versions/1/train`.
+    Traverse only directory metadata to a bounded depth, never iterate image
+    files or descend into class image folders. Fail closed on ambiguity.
     """
-    bases = [root]
-    kaggle_input = Path("/kaggle/input")
-    if kaggle_input not in bases:
-        bases.append(kaggle_input)
-    seen = set()
-    matched = []
-    available = []
+    import os
+
+    bases = [root, Path("/kaggle/input")]
+    candidates = {}
+    inspected = []
+    MAX_DEPTH = 8
+
     for base in bases:
         if not base.is_dir():
             continue
-        first_level = [base] + sorted(p for p in base.iterdir() if p.is_dir())
-        for item in first_level:
-            available.append(str(item))
-            second_level = [item] + sorted(p for p in item.iterdir() if p.is_dir())
-            for candidate in second_level:
-                if candidate in seen:
-                    continue
-                seen.add(candidate)
-                if (candidate / "train").is_dir() and (candidate / "test").is_dir():
-                    matched.append(candidate)
-    if len(matched) != 1:
+        for current, subdirs, _ in os.walk(base, topdown=True, followlinks=False):
+            current_path = Path(current)
+            depth = len(current_path.relative_to(base).parts)
+            if len(inspected) < 50:
+                inspected.append(str(current_path))
+            # A candidate must have both partitions with our exact 3 classes.
+            if all(
+                (current_path / split / label).is_dir()
+                for split in ("train", "test")
+                for label in CLASS_NAMES
+            ):
+                candidates[str(current_path.resolve())] = current_path
+                subdirs[:] = []
+                continue
+            # None of the children of a train/test split can be another root.
+            if current_path.name in ("train", "test") or depth >= MAX_DEPTH:
+                subdirs[:] = []
+            else:
+                subdirs[:] = sorted(
+                    name for name in subdirs
+                    if name not in ("__pycache__", ".ipynb_checkpoints")
+                )
+
+    if len(candidates) != 1:
         raise FileNotFoundError(
-            f"Expected one FER2013 train/test directory, found {len(matched)}. "
-            f"Inspected bases: {bases}. Available folders: {available[:40]}. "
-            "If Kaggle /kaggle/input is empty, verify that the public dataset "
-            "msambare/fer2013 is attached to this Kaggle script."
+            f"Expected exactly one FER2013 train/test root, found {len(candidates)}. "
+            f"Searched up to depth {MAX_DEPTH} under {bases}. "
+            f"Directory samples: {inspected[:50]}. "
+            "Check msambare/fer2013 dataset mount and neutral/happy/sad folders."
         )
-    return matched[0]
+    return next(iter(candidates.values()))
 
 
 def inspect_image(path: Path):
