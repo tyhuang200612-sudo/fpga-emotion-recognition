@@ -36,7 +36,7 @@ jobs:
         with:
           gradle-version: '8.10.2'
       - name: Assemble installable debug APK
-        working-directory: android-monitor
+        working-directory: android-monitor-c
         run: gradle --no-daemon :app:assembleDebug --stacktrace
       - name: Verify Android APK generated
         run: |
