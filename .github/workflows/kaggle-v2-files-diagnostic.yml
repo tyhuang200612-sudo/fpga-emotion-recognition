@@ -1,0 +1,44 @@
+name: Read Kaggle V2 output files and version status (read-only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-v2-files-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install official Kaggle CLI
+        run: python -m pip install 'git+https://github.com/Kaggle/kaggle-cli.git@4f2dd12'
+      - name: Inspect version 4 files, status and logs without modifying the run
+        shell: bash
+        run: |
+          set +e
+          TARGET="tyhuanga/fpga-tinycnn-live-training-v2"
+          echo "### Latest status"
+          kaggle kernels status "$TARGET"
+          echo "### Version 4 available output files"
+          kaggle kernels files "$TARGET/4"
+          echo "### Latest version files"
+          kaggle kernels files "$TARGET"
+          echo "### Version 4 log snapshot"
+          kaggle kernels logs "$TARGET/4" | head -c 6500
+          echo
+          echo "### Latest log snapshot"
+          kaggle kernels logs "$TARGET" | head -c 6500
+          echo
+          echo "Diagnostic completed. No training jobs changed."
