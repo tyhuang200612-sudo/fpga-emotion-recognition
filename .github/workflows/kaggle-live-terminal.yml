@@ -1,0 +1,55 @@
+name: Kaggle live terminal (read-only, no training restart)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-live-terminal.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-live-terminal-observer
+  cancel-in-progress: true
+
+jobs:
+  live-terminal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout read-only monitoring program
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check API secret
+        shell: bash
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "::error::The Kaggle API token is missing."
+            exit 1
+          fi
+      - name: Install Kaggle CLI
+        shell: bash
+        run: python -m pip install --upgrade kaggle
+      - name: Live Kaggle terminal (status every 30 seconds)
+        shell: bash
+        run: |
+          python -u tools/kaggle_terminal.py \
+            --kernel tyhuanga/fpga-tinycnn-three-emotions \
+            --minutes 60 \
+            --interval 30
+      - name: Monitor note
+        if: always()
+        shell: bash
+        run: |
+          echo "This job reads status and publicly available Kaggle kernel logs."
+          echo "It does NOT submit, stop, or restart Kaggle GPU jobs."
+          echo "If Kaggle does not publish stdout until the kernel finishes,"
+          echo "you will see heartbeats but not actual batch/epoch metrics yet."
