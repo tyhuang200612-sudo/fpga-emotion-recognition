@@ -1,0 +1,121 @@
+name: Package real C-2026 live front camera Android APK
+
+on:
+  workflow_run:
+    workflows:
+      - Train TinyCNN-C after verified data quality audit
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      training_run_id:
+        description: Completed C training run with genuine artifacts
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c-real-camera-2026-apk
+  cancel-in-progress: false
+
+jobs:
+  camera-apk:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout camera, model definition and verified converter
+        uses: actions/checkout@v4
+      - name: Python 3.11 for real ONNX conversion
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download actual TinyCNN-C Kaggle artifacts from successful GPU job
+        uses: actions/download-artifact@v4
+        with:
+          name: tinycnn-C-16-32-64-64-quality-v1-two-seeds
+          path: trained-c
+          run-id: ${{ github.event_name == 'workflow_dispatch' && inputs.training_run_id || github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Ensure the exact requested C-2026 checkpoint and final test data exist
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roots=list(Path('trained-c').rglob('results.json'))
+          assert len(roots)==1,roots
+          base=roots[0].parent
+          result=json.loads(roots[0].read_text())
+          assert result['architecture']=='Tiny-CNN-C 16/32/64/64'
+          assert set(result['test_metrics_per_seed'])=={'2026','2027'}
+          assert result['dataset_quality']['policy']=='fer2013-three-class-safe-pixel-dedup-v1'
+          weight=base/'seed_2026'/'best.pt'
+          assert weight.is_file() and weight.stat().st_size>20000,weight
+          (Path('/tmp/seed2026_checkpoint.txt')).write_text(str(weight))
+          print('Verified real C-2026 checkpoint:',weight,flush=True)
+          PY
+      - name: Install CPU-only Torch and ONNX parity checker
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy onnx onnxruntime
+      - name: Export actual seed2026 four-convolution C network into APK assets
+        shell: bash
+        run: |
+          checkpoint="$(cat /tmp/seed2026_checkpoint.txt)"
+          python -m tools.export_onnx_c --checkpoint "$checkpoint" --out-dir android-camera-c/app/src/main/assets
+          test -s android-camera-c/app/src/main/assets/model.onnx
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('android-camera-c/app/src/main/assets/model-info.json')
+          d=json.loads(p.read_text())
+          assert d['seed']==2026
+          assert d['model']=='TinyCNN-C 16/32/64/64'
+          assert d['class_names']==['neutral','happy','sad']
+          assert d['onnx_torch_max_abs_diff']<0.0001
+          print('GENUINE C-model ONNX bundle ready',flush=True)
+          PY
+      - name: Java 17 and Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify Android 35 SDK
+        run: |
+          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Build fully offline Camera2 ML Kit ONNX Android App
+        working-directory: android-camera-c
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+      - name: Confirm actual model is inside the installable APK, rename to readable filename
+        run: |
+          python - <<'PY'
+          from zipfile import ZipFile
+          from pathlib import Path
+          apk=Path('android-camera-c/app/build/outputs/apk/debug/app-debug.apk')
+          assert apk.is_file() and apk.stat().st_size>100000
+          with ZipFile(apk) as z:
+            assert 'assets/model.onnx' in z.namelist()
+            assert 'assets/model-info.json' in z.namelist()
+            assert z.getinfo('assets/model.onnx').file_size>100000
+            import json
+            info=json.loads(z.read('assets/model-info.json'))
+            assert info['model']=='TinyCNN-C 16/32/64/64' and info['seed']==2026
+            print('APK contains actual user-requested C 2026 ONNX weights',flush=True)
+          Path('dist').mkdir(exist_ok=True)
+          import shutil
+          shutil.copyfile(apk,'dist/TinyCNN-C-Seed2026-RealTime-Camera.apk')
+          PY
+      - name: Archive actual Android camera APK for phone install
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C-Seed2026-RealTime-Camera-Android
+          path: dist/TinyCNN-C-Seed2026-RealTime-Camera.apk
+          if-no-files-found: error
+          retention-days: 30
