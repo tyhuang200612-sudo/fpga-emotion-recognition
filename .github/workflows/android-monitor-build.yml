@@ -1,0 +1,49 @@
+name: Build Android FPGA Training Monitor APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'android-monitor/**'
+      - '.github/workflows/android-monitor-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout monitor source
+        uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android API 35
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Install Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Assemble installable debug APK
+        working-directory: android-monitor
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+      - name: Verify Android APK generated
+        run: |
+          test -s android-monitor/app/build/outputs/apk/debug/app-debug.apk
+          ls -lh android-monitor/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish FPGA training monitor APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FPGA-TinyCNN-Training-Monitor-Android-APK
+          path: android-monitor/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+          if-no-files-found: error
