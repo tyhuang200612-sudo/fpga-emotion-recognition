@@ -32,7 +32,7 @@ def build_live_notebook(repo_root: Path, out: Path, username="tyhuanga") -> dict
     prep_part = script.split("# BEGIN prepare_fer2013.py\n", 1)[1].split("\n# END prepare_fer2013.py", 1)[0]
     train_part = script.split("# BEGIN train_fer2013.py\n", 1)[1].split("\n# END train_fer2013.py", 1)[0]
     train_part = train_part.rsplit('if __name__ == "__main__":', 1)[0]
-    if "def run():" not in train_part or "progress(\"EPOCH_END\"" not in train_part:
+    if "def run():" not in train_part or '"EPOCH_END"' not in train_part:
         raise RuntimeError("Training logic or detailed epoch progress missing")
     cells = [
         {
