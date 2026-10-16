@@ -1,4 +1,5 @@
 name: Publish Kaggle live Notebook V2 (no GPU started)
+# Verify fixed notebook generator and keep the existing training run intact.
 
 on:
   workflow_dispatch:
