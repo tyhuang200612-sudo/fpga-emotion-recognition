@@ -15,13 +15,13 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from src.model import CLASS_NAMES, TinyCNN
 
 
 def export_checkpoint(checkpoint: Path, out_dir: Path) -> dict:
+    import numpy as np
     import onnx
     import onnxruntime as ort
 
