@@ -40,7 +40,7 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
       - name: Install Kaggle official CLI
-        run: python -m pip install kaggle
+        run: python -m pip install kaggle Pillow
       - name: Verify trusted CPU quality artifact before GPU
         shell: bash
         run: |
