@@ -1,0 +1,105 @@
+name: Switch stale Kaggle job to logged Notebook V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/switch-kaggle-training-v2.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-fpga-job-switch
+  cancel-in-progress: false
+
+jobs:
+  switch-and-launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+      OLD: tyhuanga/fpga-tinycnn-three-emotions
+      NEW: tyhuanga/fpga-tinycnn-live-training-v2
+    steps:
+      - name: Check out FPGA source
+        uses: actions/checkout@v4
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify secret configured
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "::error::KAGGLE_API_TOKEN not configured."
+            exit 1
+          fi
+      - name: Install Kaggle official CLI and SDK
+        run: python -m pip install --upgrade kaggle
+      - name: Inspect old output and cancel only if empty
+        shell: bash
+        run: |
+          python -u tools/switch_to_live_v2.py
+      - name: Recheck old is not running
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re, subprocess
+          p=subprocess.run(
+              ["kaggle","kernels","status","tyhuanga/fpga-tinycnn-three-emotions"],
+              text=True,capture_output=True,check=True
+          )
+          print("Old status before V2:", p.stdout.strip(), flush=True)
+          m=re.search(r"KernelWorkerStatus\.([A-Z_]+)",p.stdout)
+          if not m or m.group(1) not in ("COMPLETE","ERROR","CANCEL_ACKNOWLEDGED","CANCELLED"):
+              raise RuntimeError("Old still active: V2 MUST NOT start")
+          PY
+      - name: Validate logged Kaggle notebook source
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p test_build_kaggle_live_notebook.py -v
+          python -m tools.build_kaggle_live_notebook --out build/kaggle_live_v2
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("build/kaggle_live_v2/kernel-metadata.json")
+          m=json.loads(p.read_text())
+          assert m["id"]=="tyhuanga/fpga-tinycnn-live-training-v2"
+          assert m["kernel_type"]=="notebook" and m["enable_gpu"]
+          assert m["dataset_sources"]==["msambare/fer2013"]
+          print("V2 metadata validated", flush=True)
+          PY
+      - name: Start Kaggle V2 GPU training
+        shell: bash
+        run: |
+          kaggle kernels push -p build/kaggle_live_v2 --accelerator NvidiaTeslaT4
+      - name: Confirm saved V2 metadata and log URL
+        shell: bash
+        run: |
+          mkdir -p build/v2-metadata
+          kaggle kernels pull "$NEW" -p build/v2-metadata -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path("build/v2-metadata/kernel-metadata.json").read_text())
+          print("V2 kernel:",m["id"],flush=True)
+          print("GPU requested:",m.get("enable_gpu"),flush=True)
+          print("Input datasets:",m.get("dataset_sources"),flush=True)
+          assert m.get("enable_gpu")
+          assert m.get("dataset_sources")==["msambare/fer2013"]
+          PY
+          echo "V2 notebook: https://www.kaggle.com/code/$NEW"
+          echo "V2 Logs: https://www.kaggle.com/code/$NEW/log"
+      - name: Check first V2 worker state and logs
+        shell: bash
+        run: |
+          set +e
+          for n in $(seq 1 5); do
+            echo "V2 STATUS check $n"
+            kaggle kernels status "$NEW"
+            kaggle kernels logs "$NEW" | tail -c 3500
+            sleep 15
+          done
+          exit 0
