@@ -1,0 +1,47 @@
+name: Read real TinyCNN-B two-seed progress (no GPU action)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-b-progress-inspect.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - name: Verify B Kaggle state and actual training events
+        shell: bash
+        run: |
+          python -m pip install --quiet kaggle
+          kaggle kernels status tyhuanga/fpga-tinycnn-b-two-seeds
+          python - <<'PY'
+          import json, urllib.request
+          url="https://ntfy.sh/fpga-tinycnn-b-6f2b9ce781f94c82a493b7180c5edb20/json?poll=1&since=all"
+          with urllib.request.urlopen(url, timeout=15) as r:
+              lines=r.read(300000).decode("utf-8","replace").splitlines()
+          measurements=[]
+          for line in lines:
+              try:
+                  m=json.loads(line)
+                  if m.get("event")!="message": continue
+                  p=json.loads(m.get("message",""))
+                  if p.get("event") in ("START","GPU_READY","DATASET_FOUND","AUDIT_START","AUDIT_COMPLETE",
+                                      "SEED_START","EPOCH_END","SEED_FINISHED","TEST_FINISHED","COMPLETE","ERROR"):
+                      measurements.append(p)
+              except (ValueError, TypeError):
+                  pass
+          print("B execution events received:",len(measurements),flush=True)
+          for p in measurements[-15:]:
+              print("REAL B:",{k:p[k] for k in
+                ("event","seed","epoch","train_loss","val_accuracy","val_macro_f1","message","gpu")
+                if k in p},flush=True)
+          print("REPORTED STAGE:",measurements[-1].get("event") if measurements else "NO EXECUTION EVIDENCE",flush=True)
+          PY
