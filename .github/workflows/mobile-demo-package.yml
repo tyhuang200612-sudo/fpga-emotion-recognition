@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - Train FPGA Tiny-CNN on Kaggle T4
+      - Train monitored TinyCNN V3 on Kaggle T4
     types:
       - completed
   workflow_dispatch:
