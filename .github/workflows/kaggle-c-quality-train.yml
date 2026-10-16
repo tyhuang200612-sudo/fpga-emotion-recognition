@@ -1,6 +1,11 @@
 name: Train TinyCNN-C after verified data quality audit
+# This first launch reuses successful CPU audit run 38943480461; future runs await successful audits.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c-quality-train.yml'
   workflow_run:
     workflows:
       - FER2013 C quality audit (CPU first)
@@ -17,7 +22,7 @@ concurrency:
 
 jobs:
   train-c:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 320
     env:
@@ -37,7 +42,7 @@ jobs:
         with:
           name: fer2013-c-quality-v1-reviewed
           path: build/reference-quality
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ github.event_name == 'push' && 38943480461 || github.event.workflow_run.id }}
           github-token: ${{ github.token }}
       - name: Install Kaggle official CLI
         run: python -m pip install kaggle Pillow
