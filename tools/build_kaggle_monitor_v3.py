@@ -33,6 +33,15 @@ def build_monitor_v3(repo_root: Path, out: Path) -> dict:
         'else:\n'
         '    raise RuntimeError("Monitoring endpoint is unreachable. Refusing to start GPU training.")\n'
     ))
+    # If CUDA allocation failed, announce it before the notebook aborts.
+    boot = notebook["cells"][2]
+    boot_code = "".join(boot["source"])
+    boot_code = boot_code.replace(
+        '    raise RuntimeError("GPU 未分配，停止执行，不会进行 CPU 训练。")',
+        '    publish_progress({"event":"ERROR", "message":"GPU not assigned. No training started."})\\n'
+        '    raise RuntimeError("GPU 未分配，停止执行，不会进行 CPU 训练。")',
+    )
+    boot["source"] = boot_code.splitlines(keepends=True)
     # Distinguish real training from testing; failures must appear in the app.
     last = notebook["cells"][-1]
     last["source"] = (
