@@ -23,12 +23,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
-      - name: Install Android API 35
+      - name: Use preinstalled Android SDK on GitHub runner
+        shell: bash
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" | head
+          test -d "$ANDROID_HOME/platforms/android-35" || \
+            sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Install Gradle 8.10.2
         uses: gradle/actions/setup-gradle@v4
         with:
