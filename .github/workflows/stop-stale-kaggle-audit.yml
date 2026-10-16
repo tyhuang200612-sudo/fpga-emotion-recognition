@@ -1,0 +1,39 @@
+name: Stop only old Kaggle CPU audit (protect GPU V2)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/stop-stale-kaggle-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-audit-only-cancel
+  cancel-in-progress: false
+
+jobs:
+  stop-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout safe audit stop script
+        uses: actions/checkout@v4
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI and SDK
+        run: python -m pip install kaggle requests
+      - name: Verify and stop ONLY fpga-emotion-audit Version 2
+        run: python -u tools/cancel_audit_only.py
+      - name: Remind which task is preserved
+        if: always()
+        run: |
+          echo "Preserve model: https://www.kaggle.com/code/tyhuanga/fpga-tinycnn-live-training-v2"
+          echo "Only audit target: https://www.kaggle.com/code/tyhuanga/fpga-emotion-audit"
