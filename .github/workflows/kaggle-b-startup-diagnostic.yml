@@ -1,0 +1,62 @@
+name: Diagnose Kaggle B startup and logs (read only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-b-startup-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install official Kaggle CLI
+        run: python -m pip install --quiet kaggle
+      - name: Query B state, full logs and output file listing without modifying the run
+        shell: bash
+        run: |
+          set +e
+          TARGET=tyhuanga/fpga-tinycnn-b-two-seeds
+          echo "===== B STATUS ====="
+          kaggle kernels status "$TARGET"
+          echo "===== B STDERR/STDOUT LOGS (first 9000 bytes) ====="
+          kaggle kernels logs "$TARGET" > /tmp/b-log 2>&1
+          result=$?
+          echo "Log command exit code: $result"
+          wc -c /tmp/b-log
+          head -c 9000 /tmp/b-log
+          echo
+          echo "===== B PRODUCED FILES ====="
+          kaggle kernels files "$TARGET" 2>&1 | head -c 4000
+          echo
+          echo "===== PERSISTED METADATA ====="
+          mkdir -p /tmp/b-meta
+          kaggle kernels pull "$TARGET" -p /tmp/b-meta -m >/dev/null 2>&1
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path("/tmp/b-meta/kernel-metadata.json")
+          if p.exists():
+              v=json.loads(p.read_text())
+              for k in ("id","code_file","enable_gpu","enable_internet","machine_shape","dataset_sources","kernel_type"):
+                  print(k,":",v.get(k),flush=True)
+              code=Path("/tmp/b-meta")/v.get("code_file","missing")
+              if code.exists():
+                  note=json.loads(code.read_text())
+                  print("Number of cells:",len(note.get("cells",[])),flush=True)
+                  print("Number of code cells:",sum(x.get("cell_type")=="code" for x in note.get("cells",[])),flush=True)
+                  print("Contains two-seed config:",any("SEEDS = (2026, 2027)" in "".join(x.get("source",[])) for x in note.get("cells",[])),flush=True)
+          else: print("Metadata pull returned no file",flush=True)
+          PY
+          echo "Read-only B diagnostics complete. Kaggle run unchanged."
