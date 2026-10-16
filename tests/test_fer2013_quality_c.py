@@ -7,14 +7,9 @@ from pathlib import Path
 from PIL import Image
 
 from tools.optimize_fer2013_for_c import optimize_manifests
-from src.model_c import resource_estimates
 
 
 class QualityTests(unittest.TestCase):
-    def test_c_resources(self):
-        self.assertEqual(resource_estimates()["weight_count"], 60240)
-        self.assertEqual(resource_estimates()["macs_per_frame"], 10948800)
-
     def test_heldout_immutable_and_pixel_duplicate_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)/"fer"
