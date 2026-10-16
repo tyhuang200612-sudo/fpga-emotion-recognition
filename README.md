@@ -50,3 +50,7 @@ docs/actions-and-colab.md       # Actions 与 Colab 能力边界
 ## 安全性
 
 原始人脸图像、训练集、模型权重和个人身份信息默认不提交 GitHub。数据集需要核验合法来源、标签定义、许可与数据泄漏风险。训练与推理报告仅在完成实测后填写。
+
+## FER2013 公开数据集（替代 3.94GB 上传用于第一轮基线）
+
+已加入 [Kaggle 官方 API 自动审计说明](docs/fer2013-kaggle.md)。通过 GitHub Actions 手动提交 **CPU 数据审计任务** 到 Kaggle，筛选 neutral、happy、sad；确认数据质量后才安排正式 GPU 训练。不会自动使用免费 GPU 配额。
