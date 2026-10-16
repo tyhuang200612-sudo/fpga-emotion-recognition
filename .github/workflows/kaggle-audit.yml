@@ -48,6 +48,18 @@ jobs:
         run: python -m pip install --upgrade kaggle
       - name: Submit FER2013 audit (not training; no GPU)
         run: kaggle kernels push -p build/kaggle_fer2013
+      - name: Display Kaggle kernel metadata
+        run: |
+          mkdir -p build/remote-kaggle-metadata
+          kaggle kernels pull "$KAGGLE_ACCOUNT/$KERNEL_SLUG" -p build/remote-kaggle-metadata -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("build/remote-kaggle-metadata/kernel-metadata.json")
+          obj = json.loads(p.read_text(encoding="utf-8"))
+          print("Attached dataset sources:", obj.get("dataset_sources"))
+          print("GPU enabled:", obj.get("enable_gpu"))
+          PY
       - name: Print Kaggle job link
         run: echo "https://www.kaggle.com/code/$KAGGLE_ACCOUNT/$KERNEL_SLUG"
       - name: Wait for remote Kaggle audit
