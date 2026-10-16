@@ -1,42 +1,88 @@
-name: Kaggle FER2013 audit (CPU only, manual)
+name: Kaggle FER2013 audit (CPU only)
 
 on:
   workflow_dispatch:
     inputs:
       kaggle_username:
-        description: 'Your Kaggle username (not email)'
+        description: "Kaggle account username (not email)"
         type: string
+        default: "tyhuanga"
         required: true
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kaggle-audit.yml"
 
 permissions:
   contents: read
 
+concurrency:
+  group: kaggle-fer2013-audit
+  cancel-in-progress: false
+
 jobs:
-  submit-audit:
+  audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-      KAGGLE_ACCOUNT: ${{ inputs.kaggle_username }}
+      KAGGLE_ACCOUNT: ${{ github.event.inputs.kaggle_username || 'tyhuanga' }}
+      KERNEL_SLUG: fpga-emotion-audit
     steps:
-      - name: Verify Kaggle token is configured
+      - name: Check Kaggle token exists
         shell: bash
         run: |
           if [ -z "$KAGGLE_API_TOKEN" ]; then
-            echo "Missing repo Actions secret KAGGLE_API_TOKEN. Add it in Settings > Secrets and variables > Actions."
+            echo "::error::Missing repo Actions secret KAGGLE_API_TOKEN."
             exit 1
           fi
-      - name: Checkout private GitHub repository
+      - name: Checkout GitHub repository
         uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Package Kaggle CPU audit
+          python-version: "3.11"
+      - name: Prepare CPU-only Kaggle audit package
         run: python tools/build_kaggle_audit.py --username "$KAGGLE_ACCOUNT"
-      - name: Install official Kaggle CLI
+      - name: Install Kaggle official CLI
         run: python -m pip install --upgrade kaggle
-      - name: Submit CPU-only audit to Kaggle
+      - name: Submit FER2013 audit (not training; no GPU)
         run: kaggle kernels push -p build/kaggle_fer2013
-      - name: Display where to inspect Kaggle job
-        run: echo "Open https://www.kaggle.com/code/$KAGGLE_ACCOUNT/fpga-emotion-audit"
+      - name: Print Kaggle job link
+        run: echo "https://www.kaggle.com/code/$KAGGLE_ACCOUNT/$KERNEL_SLUG"
+      - name: Wait for remote Kaggle audit
+        id: wait
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            status=$(kaggle kernels status "$KAGGLE_ACCOUNT/$KERNEL_SLUG" 2>&1)
+            echo "Attempt $attempt - $status"
+            if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+              echo "Remote Kaggle audit finished."
+              exit 0
+            fi
+            if echo "$status" | grep -Eq 'KernelWorkerStatus.(ERROR|CANCEL_REQUESTED|CANCEL_ACKNOWLEDGED)'; then
+              echo "::error::Kaggle audit failed or was cancelled."
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error::Timed out waiting for Kaggle audit. Check the Kaggle job page."
+          exit 1
+      - name: Download Kaggle audit outputs
+        run: |
+          mkdir -p audit-artifacts
+          kaggle kernels output "$KAGGLE_ACCOUNT/$KERNEL_SLUG" -p audit-artifacts --file-pattern '.*(audit.json|train.csv|val.csv|test.csv)$'
+          find audit-artifacts -type f -maxdepth 3
+      - name: Upload audit report to GitHub Actions artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fer2013-3class-audit
+          path: audit-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Show Kaggle logs if audit fails
+        if: failure()
+        shell: bash
+        run: kaggle kernels logs "$KAGGLE_ACCOUNT/$KERNEL_SLUG" || true
