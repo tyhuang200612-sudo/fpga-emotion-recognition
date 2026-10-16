@@ -1,0 +1,40 @@
+name: FPGA project checks (no training)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fpga-ci.yml'
+      - 'colab_setup.ipynb'
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'configs/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpga-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-check:
+    name: Verify notebook and Tiny-CNN on CPU
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate Colab notebook (no execution)
+        run: python tools/validate_notebook.py
+      - name: Install CPU-only PyTorch
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Verify Tiny-CNN on CPU (no training)
+        run: python -m unittest discover -s tests -v
