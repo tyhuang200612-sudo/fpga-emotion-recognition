@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#ecf6ef" />
+  <title>FPGA 三分类表情识别 · 手机验证</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.55 system-ui,-apple-system,"Noto Sans SC",sans-serif; color:#23392f; background:#f5f9f6 }
+    * {box-sizing:border-box}
+    body {margin:0;padding:20px 14px 40px}
+    main {max-width:500px;margin:auto}
+    h1 {font-size:1.35rem;margin:.2rem 0}
+    .sub {font-size:.88rem;color:#657569;margin:0 0 17px}
+    .card {background:white;border:1px solid #e1eae4;box-shadow:0 4px 20px #1f55300b;padding:16px;border-radius:17px;margin-bottom:14px}
+    .preview {position:relative; aspect-ratio:1/1; background:linear-gradient(145deg,#e2ede6,#c5d9cc);border-radius:15px;overflow:hidden;display:grid;place-items:center}
+    .preview video,.preview img {position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+    .preview video {transform:scaleX(-1)}
+    .guide {position:absolute;width:69%;height:69%;border:2px dashed rgba(255,255,255,.96);border-radius:27%;pointer-events:none;box-shadow:0 0 0 100vmax rgba(13,34,21,.06)}
+    .helper {color:#64786b;font-size:.84rem;text-align:center;margin:9px 0 0}
+    label {display:block;font-weight:600;font-size:.92rem;margin-bottom:7px}
+    input[type=file] {width:100%;font-size:.86rem}
+    .buttons {display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
+    button {min-height:43px;border-radius:12px;border:0;background:#2a704a;color:white;padding:10px 16px;font-weight:650;cursor:pointer;flex:1}
+    button.secondary {background:#e5eee7;color:#235236}
+    button:disabled {background:#bcc8bd;color:#637166;cursor:default}
+    .status {font-size:.85rem;padding-top:8px;color:#587562;min-height:29px}
+    .error {color:#b74040}
+    .result {font-size:1.35rem;font-weight:750;margin-bottom:10px}
+    .barline {display:flex;gap:12px;align-items:center;margin:10px 0}
+    .barline span {width:65px;font-size:.9rem}
+    .track {height:9px;background:#e8ede9;border-radius:99px;flex:1;overflow:hidden}
+    .fill {height:100%;background:#469564;width:0;transition:width .2s;border-radius:99px}
+    .barline output {min-width:50px;text-align:right;font-variant-numeric:tabular-nums}
+    .notice {font-size:.8rem;color:#66756b;margin-top:10px}
+    code {font-size:.85em;word-wrap:break-word}
+    footer {color:#718277;text-align:center;font-size:.77rem;padding:6px}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+</head>
+<body>
+<main>
+  <h1>表情识别 · 手机测试版</h1>
+  <p class="sub">48×48 灰度 · 中性 / 开心 / 伤心 · 在本机推理</p>
+  <section class="card">
+    <label for="model">① 选择训练完成后导出的 ONNX 模型</label>
+    <input id="model" type="file" accept=".onnx,application/octet-stream" />
+    <div id="modelStatus" class="status" aria-live="polite">模型尚未加载。没有模型权重时不能进行真实识别。</div>
+  </section>
+  <section class="card">
+    <div class="preview" id="preview">
+      <span id="placeholder">请打开摄像头或选择照片</span>
+      <video id="camera" autoplay playsinline muted hidden></video>
+      <img id="picture" alt="待测照片" hidden />
+      <div class="guide" aria-hidden="true"></div>
+    </div>
+    <p class="helper">将脸放在虚线框中央，尽量正面、光线充足</p>
+    <div class="buttons">
+      <button type="button" id="startCamera">打开前置摄像头</button>
+      <button type="button" class="secondary" id="stopCamera">关闭摄像头</button>
+    </div>
+    <label for="photo" style="margin-top:14px">或者选择一张人脸照片</label>
+    <input id="photo" type="file" accept="image/*" />
+    <div class="buttons">
+      <button type="button" id="predict" disabled>识别当前画面</button>
+    </div>
+    <div id="cameraStatus" class="status" aria-live="polite">摄像头必须在 HTTPS 页面授权；照片测试不需要授权。</div>
+  </section>
+  <section class="card" aria-live="polite">
+    <div id="prediction" class="result">等待模型与画面…</div>
+    <div class="barline"><span>😐 中性</span><div class="track"><div class="fill" id="bar0"></div></div><output id="val0">—</output></div>
+    <div class="barline"><span>😊 开心</span><div class="track"><div class="fill" id="bar1"></div></div><output id="val1">—</output></div>
+    <div class="barline"><span>😢 伤心</span><div class="track"><div class="fill" id="bar2"></div></div><output id="val2">—</output></div>
+    <p class="notice">这些数值是模型输出的相对分类概率，不一定经过概率校准。本工具只测试可见面部表情，不能识别真实心理情绪。</p>
+  </section>
+  <footer>页面不上传照片或视频至服务器。推理在手机浏览器内运行；首次加载推理库需要网络。</footer>
+</main>
+<script>
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const camera = $("camera"), picture = $("picture");
+  const tmp = document.createElement("canvas"), ctx = tmp.getContext("2d", {willReadFrequently:true});
+  tmp.width = tmp.height = 48;
+  const names = ["😐 中性","😊 开心","😢 伤心"];
+  let session = null, stream = null, photoURL = null, mode = "none", busy = false;
+
+  function msg(id, text, isError=false) {
+    $(id).textContent = text;
+    $(id).classList.toggle("error",isError);
+  }
+  function refreshButton() {
+    $("predict").disabled = !session || mode === "none" || busy;
+  }
+  function stopCamera() {
+    if(stream) stream.getTracks().forEach(t => t.stop());
+    stream=null; camera.srcObject=null; camera.hidden=true;
+    if(mode === "camera") mode="none";
+    refreshButton();
+  }
+  $("stopCamera").onclick=() => { stopCamera(); msg("cameraStatus","摄像头已关闭。"); };
+  $("startCamera").onclick=async () => {
+    if(!navigator.mediaDevices?.getUserMedia) {
+      msg("cameraStatus","此浏览器或页面地址不能访问摄像头。请使用 HTTPS，或通过照片测试。",true);
+      return;
+    }
+    stopCamera();
+    picture.hidden=true;
+    try {
+      stream=await navigator.mediaDevices.getUserMedia({
+        audio:false,video:{facingMode:"user",width:{ideal:640},height:{ideal:640}}
+      });
+      camera.srcObject=stream; await camera.play();
+      camera.hidden=false; $("placeholder").hidden=true; mode="camera";
+      msg("cameraStatus","摄像头已准备好。将脸放入虚线框，再点击识别。");
+    } catch(e) {
+      msg("cameraStatus","无法打开摄像头："+(e?.message||"检查浏览器权限"),true);
+    }
+    refreshButton();
+  };
+  $("photo").onchange=async e => {
+    const file=e.target.files?.[0]; if(!file)return;
+    stopCamera();
+    if(photoURL)URL.revokeObjectURL(photoURL);
+    photoURL=URL.createObjectURL(file);
+    picture.onload=() => {
+      picture.hidden=false; $("placeholder").hidden=true; mode="photo";
+      msg("cameraStatus","照片已就绪。确认脸部位于中央后点击识别。");
+      refreshButton();
+    };
+    picture.onerror=() => msg("cameraStatus","照片文件无法读取。",true);
+    picture.src=photoURL;
+  };
+  $("model").onchange=async e => {
+    const file=e.target.files?.[0];
+    if(!file)return;
+    session=null;refreshButton();
+    msg("modelStatus","正在验证并加载模型…");
+    try {
+      if(typeof ort==="undefined") throw new Error("ONNX Runtime 未加载，检查网络或 CDN。");
+      ort.env.wasm.numThreads=1;
+      ort.env.wasm.wasmPaths="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      const s=await ort.InferenceSession.create(bytes,{executionProviders:["wasm"]});
+      if(s.inputNames.length!==1||s.outputNames.length!==1)
+        throw new Error("ONNX 输入或输出数量错误。");
+      session=s;
+      msg("modelStatus","模型已加载。输入 "+s.inputNames[0]+"；输出 "+s.outputNames[0]+"。");
+    }catch(err) {
+      msg("modelStatus","模型加载失败："+(err?.message||String(err)),true);
+    }
+    refreshButton();
+  };
+  $("predict").onclick=async() => {
+    if(!session||busy||mode==="none")return;
+    busy=true;refreshButton(); $("prediction").textContent="识别中…";
+    try {
+      const source=mode==="camera"?camera:picture;
+      const w=mode==="camera"?source.videoWidth:source.naturalWidth;
+      const h=mode==="camera"?source.videoHeight:source.naturalHeight;
+      if(w<48||h<48)throw new Error("摄像头或图片尺寸过小。");
+      // Center-square ROI, aligned with the square camera preview. This is NOT face detection.
+      const side=Math.min(w,h)*0.69,sx=(w-side)/2,sy=(h-side)/2;
+      ctx.clearRect(0,0,48,48);
+      ctx.drawImage(source,sx,sy,side,side,0,0,48,48);
+      const bytes=ctx.getImageData(0,0,48,48).data;
+      const grayscale=new Float32Array(48*48);
+      for(let i=0;i<48*48;i++){
+        let p=i*4;
+        grayscale[i]=Math.min(1,Math.max(0,(0.299*bytes[p]+0.587*bytes[p+1]+0.114*bytes[p+2])/255));
+      }
+      const input=new ort.Tensor("float32",grayscale,[1,1,48,48]);
+      const outputs=await session.run({[session.inputNames[0]]:input});
+      const logits=Array.from(outputs[session.outputNames[0]].data);
+      if(logits.length!==3||logits.some(v=>!Number.isFinite(v)))
+        throw new Error("模型输出必须是 3 个有限数字。");
+      const mx=Math.max(...logits),ex=logits.map(v=>Math.exp(v-mx));
+      const sum=ex.reduce((a,b)=>a+b,0),prob=ex.map(v=>v/sum);
+      const best=prob.indexOf(Math.max(...prob));
+      $("prediction").textContent="识别结果："+names[best];
+      for(let i=0;i<3;i++){
+        $("bar"+i).style.width=(prob[i]*100).toFixed(1)+"%";
+        $("val"+i).textContent=(prob[i]*100).toFixed(1)+"%";
+      }
+    }catch(err) {
+      $("prediction").textContent="识别失败";
+      msg("cameraStatus",err?.message||String(err),true);
+    }finally {
+      busy=false;refreshButton();
+    }
+  };
+  window.addEventListener("pagehide",()=>{stopCamera();if(photoURL)URL.revokeObjectURL(photoURL);});
+})();
+</script>
+</body>
+</html>
