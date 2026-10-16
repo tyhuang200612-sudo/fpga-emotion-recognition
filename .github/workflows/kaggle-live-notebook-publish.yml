@@ -1,0 +1,67 @@
+name: Publish Kaggle live Notebook V2 (no GPU started)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-live-notebook-publish.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  publish-live-notebook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KERNEL: tyhuanga/fpga-tinycnn-live-v2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate API credentials
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "::error::KAGGLE_API_TOKEN is not configured"
+            exit 1
+          fi
+      - name: Prepare multi-cell notebook and run syntax/test guards
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p test_build_kaggle_live_notebook.py -v
+          python -m tools.build_kaggle_live_notebook --out build/kaggle_live_v2
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Upload notebook without starting GPU
+        shell: bash
+        run: |
+          # Explicit --no-run is essential: old training job stays untouched.
+          kaggle kernels push -p build/kaggle_live_v2 --no-run
+      - name: Verify new Kaggle notebook metadata
+        shell: bash
+        run: |
+          mkdir -p build/remote
+          kaggle kernels pull "$KERNEL" -p build/remote -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path("build/remote/kernel-metadata.json").read_text())
+          print("Published:", cfg.get("id"))
+          print("Kernel type:", cfg.get("kernel_type"))
+          print("GPU requested:", cfg.get("enable_gpu"))
+          print("Dataset:", cfg.get("dataset_sources"))
+          if cfg.get("kernel_type")!="notebook":
+              raise SystemExit("Published kernel not a Notebook")
+          if not cfg.get("enable_gpu"):
+              raise SystemExit("GPU was not saved as enabled")
+          PY
+      - name: Link for user's phone
+        run: |
+          echo "Kaggle interactive notebook:"
+          echo "https://www.kaggle.com/code/$KERNEL"
+          echo "This workflow has NOT started training. Open Edit > Run All, or Save Version > Save & Run All when ready."
