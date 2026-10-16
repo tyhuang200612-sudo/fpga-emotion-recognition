@@ -1,0 +1,134 @@
+name: Train monitored TinyCNN V3 on Kaggle T4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-v3-train.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: kaggle-fpga-monitored-v3
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 310
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+      OLD: tyhuanga/fpga-tinycnn-live-training-v2
+      NEW: tyhuanga/fpga-tinycnn-monitor-v3
+    steps:
+      - name: Checkout audited model source
+        uses: actions/checkout@v4
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify Kaggle authentication
+        run: test -n "$KAGGLE_API_TOKEN"
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Block new training unless V2 has stopped
+        shell: bash
+        run: |
+          python - <<'PY'
+          import subprocess,re
+          def get(slug):
+              p=subprocess.run(["kaggle","kernels","status",slug],capture_output=True,text=True,timeout=25)
+              m=re.search(r"KernelWorkerStatus\.([A-Z_]+)",p.stdout+p.stderr)
+              if not m: raise RuntimeError(f"Cannot determine state for {slug}. Refusing to start.")
+              print("Kaggle status:",slug,m.group(1),flush=True)
+              return m.group(1)
+          old=get("tyhuanga/fpga-tinycnn-live-training-v2")
+          if old not in ("CANCEL_ACKNOWLEDGED","CANCELLED","COMPLETE","ERROR"):
+              raise RuntimeError("Old V2 still active. V3 not submitted.")
+          # If V3 was started previously do NOT start it twice.
+          v3=get("tyhuanga/fpga-tinycnn-monitor-v3")
+          if v3 in ("RUNNING","QUEUED","PENDING"):
+              raise RuntimeError("V3 already running. Duplicate submission blocked.")
+          PY
+      - name: Validate V3 notebook and telemetry test code
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p test_build_kaggle_monitor_v3.py -v
+          python -m tools.build_kaggle_monitor_v3 --out build/kaggle_monitor_v3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("build/kaggle_monitor_v3/kernel-metadata.json")
+          m=json.loads(p.read_text())
+          assert m["id"]=="tyhuanga/fpga-tinycnn-monitor-v3"
+          assert m["enable_gpu"] and m["enable_internet"]
+          assert m["dataset_sources"]==["msambare/fer2013"]
+          print("V3 source and metadata verified",flush=True)
+          PY
+      - name: Start genuine V3 monitored Kaggle GPU training
+        shell: bash
+        run: |
+          kaggle kernels push -p build/kaggle_monitor_v3 --accelerator NvidiaTeslaT4
+      - name: Validate persisted Kaggle GPU internet and data setup
+        shell: bash
+        run: |
+          mkdir -p build/remote
+          kaggle kernels pull "$NEW" -p build/remote -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path("build/remote/kernel-metadata.json").read_text())
+          print("Saved Kaggle V3:",cfg.get("id"))
+          print("T4 enabled:",cfg.get("enable_gpu"),"Internet:",cfg.get("enable_internet"),flush=True)
+          print("FER2013 attached:",cfg.get("dataset_sources"),flush=True)
+          if not cfg.get("enable_gpu") or not cfg.get("enable_internet"):
+              raise SystemExit("Kaggle did not save required GPU or internet setup")
+          if cfg.get("dataset_sources")!=["msambare/fer2013"]:
+              raise SystemExit("FER2013 public dataset attachment differs")
+          PY
+      - name: Wait for REAL Kaggle model training completion
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Android progress topic receives events FROM actual Kaggle Python steps."
+          echo "Kaggle V3: https://www.kaggle.com/code/$NEW"
+          for n in $(seq 1 430); do
+            result=$(kaggle kernels status "$NEW" 2>&1)
+            echo "Remote poll $n: $result"
+            if echo "$result" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+              echo "Kaggle V3 reports completed; downloading real checkpoints"
+              exit 0
+            fi
+            if echo "$result" | grep -Eq 'KernelWorkerStatus.(ERROR|CANCEL_REQUESTED|CANCEL_ACKNOWLEDGED|CANCELLED)'; then
+              echo "::error::Kaggle V3 stopped/failed. Do not claim a trained model."
+              exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::Kaggle V3 did not finish within ~287 min. Check remotely before resubmission."
+          exit 1
+      - name: Retrieve trained model checkpoint and evaluation metrics
+        shell: bash
+        run: |
+          mkdir -p model-artifacts
+          kaggle kernels output "$NEW" -p model-artifacts
+          test -s model-artifacts/fpga-fer2013-v1/results.json || test -s model-artifacts/results.json
+          echo "Verifying actual checkpoint files:"
+          find model-artifacts -type f -name best.pt -print
+          test "$(find model-artifacts -type f -name best.pt | wc -l)" -eq 3
+          echo "Real three-seed checkpoints and results.json found."
+      - name: Archive V3 actual models and progress logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinycnn-fer2013-three-class-model
+          path: model-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Print errors from Kaggle if any
+        if: failure()
+        shell: bash
+        run: kaggle kernels logs "$NEW" || true
