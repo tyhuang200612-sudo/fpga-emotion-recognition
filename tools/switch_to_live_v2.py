@@ -19,7 +19,7 @@ import time
 
 OLD_KERNEL = "tyhuanga/fpga-tinycnn-three-emotions"
 OLD_SESSION_ID = 359023003
-FINAL = {"COMPLETE", "ERROR", "CANCEL_ACKNOWLEDGED", "CANCEL_REQUESTED", "CANCELLED"}
+FINAL = {"COMPLETE", "ERROR", "CANCEL_ACKNOWLEDGED", "CANCELLED"}
 STATUS = re.compile(r"KernelWorkerStatus\.([A-Z_]+)")
 
 
@@ -84,17 +84,17 @@ def cancel_old_session():
 
 def main():
     current = status()
-    if current in FINAL:
-        print("Old session is no longer active. Safe to start V2.", flush=True)
-        return
-    if current not in {"RUNNING", "QUEUED", "PENDING"}:
-        raise RuntimeError("Unexpected old status; will not start another GPU run: " + current)
-
     if has_execution_output():
         raise RuntimeError(
             "Old training has non-empty output. User requested to preserve it; "
             "no cancellation or V2 start."
         )
+    if current in FINAL:
+        print("Old session is no longer active, and no output was available. Safe for V2.", flush=True)
+        return
+    if current not in {"RUNNING", "QUEUED", "PENDING", "CANCEL_REQUESTED"}:
+        raise RuntimeError("Unexpected old status; will not start another GPU run: " + current)
+
     if current == "RUNNING":
         cancel_old_session()
     else:
