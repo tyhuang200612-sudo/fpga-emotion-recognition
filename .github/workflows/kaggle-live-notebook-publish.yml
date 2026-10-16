@@ -36,8 +36,11 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_build_kaggle_live_notebook.py -v
           python -m tools.build_kaggle_live_notebook --out build/kaggle_live_v2
-      - name: Install Kaggle CLI
-        run: python -m pip install kaggle
+      - name: Install official Kaggle CLI revision supporting safe --no-run
+        shell: bash
+        run: |
+          python -m pip install 'git+https://github.com/Kaggle/kaggle-cli.git@4f2dd12'
+          kaggle kernels push --help | grep -F -- '--no-run'
       - name: Upload notebook without starting GPU
         shell: bash
         run: |
