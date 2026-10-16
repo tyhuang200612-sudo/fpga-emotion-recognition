@@ -38,7 +38,7 @@ def build_monitor_v3(repo_root: Path, out: Path) -> dict:
     boot_code = "".join(boot["source"])
     boot_code = boot_code.replace(
         '    raise RuntimeError("GPU 未分配，停止执行，不会进行 CPU 训练。")',
-        '    publish_progress({"event":"ERROR", "message":"GPU not assigned. No training started."})\\n'
+        '    publish_progress({"event":"ERROR", "message":"GPU not assigned. No training started."})\n'
         '    raise RuntimeError("GPU 未分配，停止执行，不会进行 CPU 训练。")',
     )
     boot["source"] = boot_code.splitlines(keepends=True)
