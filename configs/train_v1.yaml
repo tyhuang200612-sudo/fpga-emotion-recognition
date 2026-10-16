@@ -1,0 +1,38 @@
+# Source: 双 FPGA 视觉表情识别系统 V1.0
+# This is a proposed configuration, NOT measured results.
+project: fpga-emotion-recognition
+labels: [neutral, happy, sad]
+image:
+  width: 48
+  height: 48
+  channels: 1
+  pixel_dtype: uint8
+model:
+  name: Tiny-CNN-A
+  channels: [8, 16, 32]
+  kernel_size: 3
+  num_classes: 3
+training:
+  optimizer: AdamW
+  lr: 0.001
+  batch_size: 64
+  epochs: 60
+  early_stopping_patience: 10
+  seeds: [2026, 2027, 2028]
+  best_checkpoint_metric: val_macro_f1
+splits:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+quantization:
+  initial_method: PTQ
+  fallback: QAT
+  weight_dtype: int8
+  accumulator_dtype: int32
+deployment:
+  platform: Anlogic HX1P35A
+  chip: PH1P35MDG324
+  boards: 2
+  transport: SPI
+  target_fps: 5
+  fps_is_target_not_measurement: true
