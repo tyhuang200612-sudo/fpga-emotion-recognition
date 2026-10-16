@@ -91,12 +91,12 @@ def build_live_notebook(repo_root: Path, out: Path, username="tyhuanga") -> dict
         "nbformat_minor": 5,
     }
     out.mkdir(parents=True, exist_ok=True)
-    notebook_file = out / "fpga-tinycnn-live-v2.ipynb"
+    notebook_file = out / "fpga-tinycnn-live-training-v2.ipynb"
     notebook_file.write_text(
         json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
     meta = {
-        "id": f"{username}/fpga-tinycnn-live-v2",
+        "id": f"{username}/fpga-tinycnn-live-training-v2",
         "title": "FPGA TinyCNN Live Training V2",
         "code_file": notebook_file.name,
         "language": "python",
