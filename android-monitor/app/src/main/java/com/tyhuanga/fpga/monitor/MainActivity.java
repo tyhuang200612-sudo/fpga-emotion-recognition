@@ -31,7 +31,7 @@ import java.util.Set;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
-    private static final String TOPIC = "fpga-train-a3d857600d07e8b36b045a168d8af107";
+    private static final String TOPIC = "fpga-tinycnn-b-6f2b9ce781f94c82a493b7180c5edb20";
     private static final String ENDPOINT = "https://ntfy.sh/" + TOPIC + "/json?poll=1&since=";
     private static final int BG = Color.rgb(245, 249, 246);
     private static final int GREEN = Color.rgb(28, 127, 91);
@@ -116,8 +116,8 @@ public class MainActivity extends Activity {
         ScrollView scroll=new ScrollView(this); scroll.setFillViewport(true); scroll.setBackgroundColor(BG);
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18),dp(24),dp(18),dp(28)); scroll.addView(root);
-        add(root,text("FPGA · 实时训练",25,DARK,true),0);
-        add(root,text("TinyCNN 三分类模型   /   neutral · happy · sad",12,MUTED,false),7);
+        add(root,text("FPGA · B 模型训练",25,DARK,true),0);
+        add(root,text("TinyCNN-B 16/32/64 · 两次训练 · neutral / happy / sad",12,MUTED,false),7);
 
         LinearLayout summary=card(root);
         statusText=text("● 正在连接进度通道…",17,GREEN,true); add(summary,statusText,0);
