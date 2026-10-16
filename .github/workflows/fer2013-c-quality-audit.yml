@@ -47,7 +47,7 @@ jobs:
         shell: bash
         run: |
           python tools/prepare_fer2013.py --input-root /tmp/fer2013-c-quality --output-dir build/quality-audit/baseline > /dev/null
-          python tools/optimize_fer2013_for_c.py \
+          python -m tools.optimize_fer2013_for_c \
             --dataset-root /tmp/fer2013-c-quality \
             --input-dir build/quality-audit/baseline \
             --output-dir build/quality-audit/optimized
