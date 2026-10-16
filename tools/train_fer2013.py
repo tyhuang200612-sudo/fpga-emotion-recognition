@@ -27,6 +27,25 @@ LEARNING_RATE = 1e-3
 OUT_ROOT = Path("/kaggle/working/fpga-fer2013-v1")
 
 
+def progress(event: str, **details):
+    """Write flush-safe terminal lines and a persistent JSONL audit trail.
+
+    Kaggle may delay remote log availability; progress.jsonl is saved with
+    the trained model after the kernel completes, not a live HTTP feed.
+    """
+    import datetime
+    payload = {
+        "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "event": event,
+        **details,
+    }
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    with (OUT_ROOT / "progress.jsonl").open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        fp.flush()
+    print("[FPGA-TRAIN]", json.dumps(payload, ensure_ascii=False), flush=True)
+
+
 class FaceDataset(Dataset):
     def __init__(self, rows, dataset_root: Path, training: bool = False):
         self.rows = rows
@@ -108,17 +127,24 @@ def evaluate(model, loader, device, criterion):
 
 
 def run():
+    progress("START", message="Training script entered; checking CUDA availability")
     if not torch.cuda.is_available():
+        progress("ERROR", message="GPU not assigned; training stopped before epoch 1")
         raise RuntimeError("Kaggle GPU not assigned. Training cancelled (CPU training not allowed).")
     device = torch.device("cuda:0")
     print("GPU:", torch.cuda.get_device_name(0), flush=True)
+    progress("GPU_READY", gpu=torch.cuda.get_device_name(0), max_epochs=EPOCHS, seeds=list(SEEDS))
 
     # Find Kaggle-provided FER2013 train/test folder before spending GPU cycles.
+    progress("DATASET_LOOKUP", message="Locating FER2013 train/test folders")
     dataset_root = find_dataset_root(Path("/kaggle/input/fer2013"))
+    progress("DATASET_FOUND", path=str(dataset_root))
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     manifests = OUT_ROOT / "manifests"
+    progress("AUDIT_START", message="Scanning and hashing FER2013 images; this can take a few minutes")
     audit = build_manifests(dataset_root, manifests, val_fraction=0.18, seed=2026)
     print("Audit:", json.dumps(audit["counts"], ensure_ascii=False), flush=True)
+    progress("AUDIT_COMPLETE", counts=audit["counts"])
 
     rows = {split: read_manifest(manifests / f"{split}.csv") for split in ("train", "val", "test")}
     if any(len(rs) == 0 for rs in rows.values()):
@@ -143,6 +169,7 @@ def run():
     start_time = time.time()
 
     for seed in SEEDS:
+        progress("SEED_START", seed=seed, total_epochs=EPOCHS, batch_size=BATCH_SIZE)
         seed_everything(seed)
         train_loader = make_loader(rows["train"], dataset_root, training=True, seed=seed)
         val_loader = make_loader(rows["val"], dataset_root, training=False, seed=seed)
@@ -163,7 +190,10 @@ def run():
             model.train()
             loss_total = 0.0
             count = 0
-            for images, labels in train_loader:
+            epoch_start = time.monotonic()
+            total_batches = len(train_loader)
+            progress("EPOCH_START", seed=seed, epoch=epoch, total_epochs=EPOCHS, batches=total_batches)
+            for batch_idx, (images, labels) in enumerate(train_loader, start=1):
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
@@ -173,6 +203,13 @@ def run():
                 optimizer.step()
                 loss_total += float(loss.item()) * len(labels)
                 count += len(labels)
+                if batch_idx == 1 or batch_idx % 20 == 0 or batch_idx == total_batches:
+                    progress(
+                        "BATCH", seed=seed, epoch=epoch, batch=batch_idx,
+                        total_batches=total_batches, pct=round(100 * batch_idx / total_batches, 1),
+                        train_loss_so_far=round(loss_total / count, 5),
+                        elapsed_seconds=round(time.monotonic() - epoch_start, 1),
+                    )
             val = evaluate(model, val_loader, device, criterion)
             scheduler.step(val["macro_f1"])
             row = {
@@ -186,6 +223,14 @@ def run():
                   f"train_loss={row['train_loss']:.4f} "
                   f"val_f1={row['val_macro_f1']:.4f} "
                   f"val_acc={row['val_accuracy']:.4f}", flush=True)
+            progress(
+                "EPOCH_END", seed=seed, epoch=epoch, total_epochs=EPOCHS,
+                train_loss=round(row["train_loss"], 5),
+                val_loss=round(row["val_loss"], 5),
+                val_accuracy=round(row["val_accuracy"], 5),
+                val_macro_f1=round(row["val_macro_f1"], 5),
+                elapsed_seconds=round(time.monotonic() - epoch_start, 1),
+            )
             if val["macro_f1"] > best_val + 1e-5:
                 best_val = val["macro_f1"]
                 no_improve = 0
@@ -204,12 +249,14 @@ def run():
             )
             if no_improve >= PATIENCE:
                 print(f"EARLY STOP seed={seed} after {epoch} epochs", flush=True)
+                progress("EARLY_STOP", seed=seed, epoch=epoch, patience=PATIENCE)
                 break
 
         validation_results[str(seed)] = {
             "best_val_macro_f1": best_val,
             "best_epoch": int(torch.load(ckpt_path, map_location="cpu", weights_only=False)["epoch"]),
         }
+        progress("SEED_FINISHED", seed=seed, best_val_macro_f1=round(best_val, 5))
         if best_val > best_macro:
             best_macro, best_seed = best_val, seed
         del model, optimizer
@@ -217,6 +264,7 @@ def run():
 
     # Test is evaluated ONLY after all seeds have completed and model selection
     # is frozen by validation Macro-F1; never tune to test accuracy.
+    progress("TEST_START", message="All validation-based checkpoints selected; starting held-out test")
     for seed in SEEDS:
         ckpt = torch.load(OUT_ROOT / f"seed_{seed}" / "best.pt", map_location="cpu", weights_only=False)
         model = TinyCNN().to(device)
@@ -226,6 +274,8 @@ def run():
         test_metrics[str(seed)] = evaluate(model, test_loader, device, criterion)
         del model
         print(f"TEST seed={seed}: {json.dumps(test_metrics[str(seed)], ensure_ascii=False)}", flush=True)
+        progress("TEST_FINISHED", seed=seed, accuracy=round(test_metrics[str(seed)]["accuracy"], 5),
+                 macro_f1=round(test_metrics[str(seed)]["macro_f1"], 5))
 
     accuracy_values = [test_metrics[str(s)]["accuracy"] for s in SEEDS]
     f1_values = [test_metrics[str(s)]["macro_f1"] for s in SEEDS]
@@ -247,6 +297,8 @@ def run():
     (OUT_ROOT / "results.json").write_text(
         json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+    progress("COMPLETE", selected_seed=best_seed, test_accuracy_mean=results["test_accuracy_mean"],
+             test_macro_f1_mean=results["test_macro_f1_mean"])
     print("TRAINING COMPLETE", json.dumps(results, indent=2, ensure_ascii=False), flush=True)
 
 
