@@ -48,6 +48,8 @@ def build_c(repo_root: Path, out_dir: Path, quality_report: Path | None = None):
     quality_src = (repo_root/"tools"/"optimize_fer2013_for_c.py").read_text(encoding="utf-8")
     quality_src = quality_src.replace("from __future__ import annotations\n", "")
     quality_src = quality_src.replace("from tools.prepare_fer2013 import CLASS_NAMES, find_dataset_root\n", "")
+    # The source module CLI main() must NOT run in the Kaggle code cell.
+    quality_src = quality_src.rsplit('if __name__ == "__main__":',1)[0]
     # No source project modules exist on Kaggle; functions share the prior cell's namespace.
     assert "def optimize_manifests(" in quality_src
     cells.insert(5, make_code(quality_src+"\nprint('[DATA] Quality pass ready', flush=True)\n"))
