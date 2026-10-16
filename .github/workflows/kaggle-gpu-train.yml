@@ -1,0 +1,104 @@
+name: Train FPGA Tiny-CNN on Kaggle T4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-gpu-train.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-fpga-tinycnn-three-emotions
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_ACCOUNT: tyhuanga
+      KERNEL_SLUG: fpga-tinycnn-three-emotions
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Verify Kaggle access secret
+        shell: bash
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "::error::Missing KAGGLE_API_TOKEN repository secret."
+            exit 1
+          fi
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Python environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Bundle Kaggle GPU model script and check Python syntax
+        shell: bash
+        run: |
+          python -m py_compile src/model.py tools/prepare_fer2013.py tools/train_fer2013.py
+          python tools/build_kaggle_train.py --username "$KAGGLE_ACCOUNT"
+          python -m py_compile build/kaggle_train/train_kernel.py
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Submit GPU training to Kaggle
+        shell: bash
+        run: |
+          kaggle kernels push -p build/kaggle_train --accelerator NvidiaTeslaT4
+      - name: Display training kernel
+        run: echo "https://www.kaggle.com/code/$KAGGLE_ACCOUNT/$KERNEL_SLUG"
+      - name: Check submitted GPU configuration
+        shell: bash
+        run: |
+          mkdir -p build/kaggle-remote-metadata
+          kaggle kernels pull "$KAGGLE_ACCOUNT/$KERNEL_SLUG" -p build/kaggle-remote-metadata -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          md = json.loads(Path("build/kaggle-remote-metadata/kernel-metadata.json").read_text())
+          print("GPU requested:", md.get("enable_gpu"))
+          print("Accelerator:", md.get("machine_shape"))
+          print("Dataset attached:", md.get("dataset_sources"))
+          if not md.get("enable_gpu"):
+              raise SystemExit("Kaggle did not save GPU=true; inspect the Kaggle account GPU permissions.")
+          PY
+      - name: Wait for Kaggle training result (may take hours)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 210); do
+            status=$(kaggle kernels status "$KAGGLE_ACCOUNT/$KERNEL_SLUG" 2>&1)
+            echo "Poll $n: $status"
+            if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+              echo "Kaggle reports training finished"
+              exit 0
+            fi
+            if echo "$status" | grep -Eq 'KernelWorkerStatus.(ERROR|CANCEL_REQUESTED|CANCEL_ACKNOWLEDGED)'; then
+              echo "::error::Kaggle kernel failed/cancelled; see its logs."
+              exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::Kaggle training not finished within 140 minutes. Check Kaggle directly; do not submit again until current job is resolved."
+          exit 1
+      - name: Download training results and checkpoints
+        shell: bash
+        run: |
+          mkdir -p model-artifacts
+          kaggle kernels output "$KAGGLE_ACCOUNT/$KERNEL_SLUG" -p model-artifacts
+          test -f model-artifacts/fpga-fer2013-v1/results.json || test -f model-artifacts/results.json
+      - name: Archive model and report as GitHub workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinycnn-fer2013-three-class-model
+          path: model-artifacts/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Fetch Kaggle execution log on error
+        if: failure()
+        shell: bash
+        run: kaggle kernels logs "$KAGGLE_ACCOUNT/$KERNEL_SLUG" || true
