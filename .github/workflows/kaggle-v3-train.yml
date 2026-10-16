@@ -1,5 +1,5 @@
 name: Train monitored TinyCNN V3 on Kaggle T4
-# Redeploy after source-code syntax fix verified by CPU tests.
+# Restart after Kaggle nested /kaggle/input/datasets mount fix and all 22 CPU tests.
 
 on:
   workflow_dispatch:
