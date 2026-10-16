@@ -24,7 +24,7 @@ jobs:
           test -n "$KAGGLE_API_TOKEN" || { echo "::error::KAGGLE_API_TOKEN not configured"; exit 1; }
       - name: Install Kaggle CLI
         run: python -m pip install --upgrade kaggle
-      # Refreshed on 2026-10-16 for user-requested training progress check.
+      # Refreshed for the latest user-requested Kaggle training progress check.
       - name: Read current Kaggle worker status
         shell: bash
         run: |
