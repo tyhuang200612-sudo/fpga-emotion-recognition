@@ -21,11 +21,38 @@ EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def find_dataset_root(root: Path) -> Path:
-    """Accept /kaggle/input/fer2013 or a one-level wrapper."""
-    candidates = [root] + [p for p in root.iterdir() if p.is_dir()]
-    matched = [p for p in candidates if (p / "train").is_dir() and (p / "test").is_dir()]
+    """Find a train/test pair in Kaggle or local unzipped folders.
+
+    Kaggle may mount a public dataset below a changed slug, or add one wrapper.
+    Never silently choose a directory if more than one matches.
+    """
+    bases = [root]
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input not in bases:
+        bases.append(kaggle_input)
+    seen = set()
+    matched = []
+    available = []
+    for base in bases:
+        if not base.is_dir():
+            continue
+        first_level = [base] + sorted(p for p in base.iterdir() if p.is_dir())
+        for item in first_level:
+            available.append(str(item))
+            second_level = [item] + sorted(p for p in item.iterdir() if p.is_dir())
+            for candidate in second_level:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                if (candidate / "train").is_dir() and (candidate / "test").is_dir():
+                    matched.append(candidate)
     if len(matched) != 1:
-        raise ValueError(f"Expected one train/test folder inside {root}; found {len(matched)}")
+        raise FileNotFoundError(
+            f"Expected one FER2013 train/test directory, found {len(matched)}. "
+            f"Inspected bases: {bases}. Available folders: {available[:40]}. "
+            "If Kaggle /kaggle/input is empty, verify that the public dataset "
+            "msambare/fer2013 is attached to this Kaggle script."
+        )
     return matched[0]
 
 
