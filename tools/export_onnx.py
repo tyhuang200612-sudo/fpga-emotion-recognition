@@ -43,6 +43,7 @@ def export_checkpoint(checkpoint: Path, out_dir: Path) -> dict:
     torch.onnx.export(
         model, sample, str(dst),
         export_params=True,
+        dynamo=False,  # stable legacy exporter; avoid optional onnxscript dependency
         opset_version=17,
         do_constant_folding=True,
         input_names=["input"],
