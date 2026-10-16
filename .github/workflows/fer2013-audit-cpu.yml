@@ -1,0 +1,65 @@
+name: FER2013 public-data audit (GitHub CPU)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fer2013-audit-cpu.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  public-data-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Check Kaggle credentials
+        shell: bash
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "::error::Missing KAGGLE_API_TOKEN"
+            exit 1
+          fi
+      - name: Checkout project
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install image audit tools
+        run: python -m pip install kaggle Pillow
+      - name: Download public FER2013 to ephemeral runner
+        shell: bash
+        run: |
+          mkdir -p /tmp/fer2013-public
+          kaggle datasets download -d msambare/fer2013 -p /tmp/fer2013-public
+          unzip -q /tmp/fer2013-public/fer2013.zip -d /tmp/fer2013-public
+      - name: Create neutral / happy / sad manifests (no model training)
+        run: |
+          python tools/prepare_fer2013.py --input-root /tmp/fer2013-public --output-dir audit-artifacts
+      - name: Record report summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          audit = json.loads(Path('audit-artifacts/audit.json').read_text())
+          print(json.dumps({
+            'classes': audit['class_map'],
+            'counts': audit['counts'],
+            'broken_images_count': audit['broken_images_count'],
+            'conflicting_label_hashes_count': audit['conflicting_label_hashes_count'],
+            'excluded_training_rows_crossing_original_test': audit['excluded_training_rows_crossing_original_test'],
+          }, indent=2))
+          PY
+      - name: Save report as GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fer2013-3class-public-audit
+          path: audit-artifacts/
+          if-no-files-found: error
+          retention-days: 14
