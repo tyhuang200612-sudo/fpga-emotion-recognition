@@ -1,4 +1,5 @@
 name: Train monitored TinyCNN V3 on Kaggle T4
+# Redeploy after source-code syntax fix verified by CPU tests.
 
 on:
   workflow_dispatch:
