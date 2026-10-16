@@ -1,4 +1,4 @@
-name: Kaggle live terminal (read-only, no training restart)
+name: Kaggle V2 live terminal (read-only, no training restart)
 
 on:
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           python -u tools/kaggle_terminal.py \
-            --kernel tyhuanga/fpga-tinycnn-three-emotions \
+            --kernel tyhuanga/fpga-tinycnn-live-training-v2 \
             --minutes 60 \
             --interval 30
       - name: Monitor note
