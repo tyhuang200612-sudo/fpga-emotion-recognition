@@ -1,0 +1,75 @@
+name: FER2013 C quality audit (CPU first)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fer2013-c-quality-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fer2013-c-quality-audit
+  cancel-in-progress: false
+
+jobs:
+  quality-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout quality pipeline
+        uses: actions/checkout@v4
+      - name: Install Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU image and dataset dependencies
+        run: python -m pip install kaggle Pillow
+      - name: Run synthetic quality, leakage and dataset-safety tests
+        run: |
+          python -m unittest discover -s tests -p test_fer2013_quality_c.py -v
+          python -m unittest discover -s tests -p test_kaggle_c_quality.py -v
+          python -m unittest discover -s tests -p test_kaggle_b_two_seeds.py -v
+      - name: Download ORIGINAL FER2013 public dataset for CPU inspection
+        shell: bash
+        run: |
+          test -n "$KAGGLE_API_TOKEN"
+          mkdir -p /tmp/fer2013-c-quality
+          kaggle datasets download -d msambare/fer2013 -p /tmp/fer2013-c-quality
+          unzip -q /tmp/fer2013-c-quality/fer2013.zip -d /tmp/fer2013-c-quality
+      - name: Build immutable baseline manifests and optimized C manifests
+        shell: bash
+        run: |
+          python tools/prepare_fer2013.py --input-root /tmp/fer2013-c-quality --output-dir build/quality-audit/baseline > /dev/null
+          python tools/optimize_fer2013_for_c.py \
+            --dataset-root /tmp/fer2013-c-quality \
+            --input-dir build/quality-audit/baseline \
+            --output-dir build/quality-audit/optimized
+      - name: Verify quality safety and snapshot the exact heldout test
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path("build/quality-audit")
+          report=json.loads((root/"optimized/quality-report.json").read_text())
+          assert report["policy"]=="fer2013-three-class-safe-pixel-dedup-v1"
+          assert report["ferplus_labels_applied"] is False
+          assert report["original_counts"]["test"]==report["cleaned_counts"]["test"]
+          assert (root/"baseline/test.csv").read_bytes()==(root/"optimized/test.csv").read_bytes()
+          assert hashlib.sha256((root/"optimized/test.csv").read_bytes()).hexdigest()==report["heldout_test_sha256"]
+          for split in ("train","val","test"):
+              assert report["cleaned_counts"][split]>100
+          print("C QUALITY AUDIT PASSED",json.dumps(report,indent=2))
+          PY
+      - name: Archive optimized and original manifests with audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: fer2013-c-quality-v1-reviewed
+          path: build/quality-audit/
+          retention-days: 30
+          if-no-files-found: error
