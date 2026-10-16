@@ -1,0 +1,51 @@
+name: Inspect actual V3 phone telemetry (read-only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-v3-progress-inspect.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Query real Kaggle V3 state and independently published training events
+        shell: bash
+        run: |
+          python -m pip install kaggle >/dev/null
+          kaggle kernels status tyhuanga/fpga-tinycnn-monitor-v3
+          python - <<'PY'
+          import urllib.request,json
+          url="https://ntfy.sh/fpga-train-a3d857600d07e8b36b045a168d8af107/json?poll=1&since=all"
+          with urllib.request.urlopen(url,timeout=12) as response:
+              raw=response.read(300000).decode("utf-8","replace")
+          events=[]
+          for line in raw.splitlines():
+              try:
+                  msg=json.loads(line)
+                  if msg.get("event")!="message":continue
+                  payload=json.loads(msg.get("message",""))
+                  if isinstance(payload,dict):events.append(payload)
+              except (ValueError,TypeError):pass
+          print("Actual telemetry message count:",len(events),flush=True)
+          print("No counts or model accuracy claimed unless received.",flush=True)
+          for payload in events[-20:]:
+              reduced={k:payload[k] for k in ("event","seed","epoch","batch","val_accuracy","train_loss","gpu","message") if k in payload}
+              print("EVENT",json.dumps(reduced,ensure_ascii=False),flush=True)
+          if not any(e.get("event") in ("START","GPU_READY","AUDIT_START","EPOCH_END","ERROR") for e in events):
+              print("STATUS: No proven model execution event yet.",flush=True)
+          else:
+              print("STATUS: Received direct events from actual Kaggle notebook.",flush=True)
+          PY
