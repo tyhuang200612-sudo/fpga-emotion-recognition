@@ -1,0 +1,37 @@
+name: Kaggle API connection check (no GPU)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-connection.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-kaggle-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Check Kaggle secret is available
+        shell: bash
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "::error::KAGGLE_API_TOKEN is missing or empty in repository Actions secrets."
+            exit 1
+          fi
+          echo "Kaggle token is configured (value not printed)."
+      - name: Install Kaggle official CLI
+        shell: bash
+        run: |
+          python -m pip install --upgrade kaggle
+      - name: Check Kaggle API access with account-owned dataset list
+        shell: bash
+        run: |
+          kaggle datasets list --mine
+          echo "Authenticated Kaggle datasets API check completed."
