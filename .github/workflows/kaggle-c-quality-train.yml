@@ -1,0 +1,169 @@
+name: Train TinyCNN-C after verified data quality audit
+
+on:
+  workflow_run:
+    workflows:
+      - FER2013 C quality audit (CPU first)
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: kaggle-fpga-tinycnn-c-quality-v1
+  cancel-in-progress: false
+
+jobs:
+  train-c:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+      MODEL_C: tyhuanga/fpga-tinycnn-c-quality-v1
+      MODEL_B: tyhuanga/fpga-tinycnn-b-two-seeds
+    steps:
+      - name: Checkout C source only after successful audited dataset
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download independently verified C quality report
+        uses: actions/download-artifact@v4
+        with:
+          name: fer2013-c-quality-v1-reviewed
+          path: build/reference-quality
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Install Kaggle official CLI
+        run: python -m pip install kaggle
+      - name: Verify trusted CPU quality artifact before GPU
+        shell: bash
+        run: |
+          test -n "$KAGGLE_API_TOKEN"
+          test -s build/reference-quality/optimized/quality-report.json
+          python - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          r=Path("build/reference-quality")
+          data=json.loads((r/"optimized/quality-report.json").read_text())
+          assert data["policy"]=="fer2013-three-class-safe-pixel-dedup-v1"
+          assert data["ferplus_labels_applied"] is False
+          assert (r/"baseline/test.csv").read_bytes()==(r/"optimized/test.csv").read_bytes()
+          sha=hashlib.sha256((r/"optimized/test.csv").read_bytes()).hexdigest()
+          assert sha==data["heldout_test_sha256"]
+          print("Audited source test manifest immutable: sha256="+sha,flush=True)
+          PY
+      - name: Require B baseline finished and block duplicate C GPU job
+        shell: bash
+        run: |
+          set -euo pipefail
+          prior=$(kaggle kernels status "$MODEL_B" 2>&1)
+          echo "B: $prior"
+          echo "$prior" | grep -q 'KernelWorkerStatus.COMPLETE' || {
+             echo "::error::B baseline is not complete, will not overlap GPU training"
+             exit 1
+          }
+          existing=$(kaggle kernels status "$MODEL_C" 2>&1) || true
+          echo "C pre-run status: $existing"
+          if echo "$existing" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
+              echo "::error::Existing C job still in progress; no duplicate launch"
+              exit 1
+          fi
+      - name: Generate syntax-checked C notebook with embedded CPU dataset fingerprint
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p test_kaggle_c_quality.py -v
+          python -m unittest discover -s tests -p test_fer2013_quality_c.py -v
+          python -m tools.build_kaggle_c_quality \
+            --out build/kaggle_c_quality_v1 \
+            --quality-report build/reference-quality/optimized/quality-report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=Path("build/kaggle_c_quality_v1")
+          md=json.loads((d/"kernel-metadata.json").read_text())
+          assert md["id"]=="tyhuanga/fpga-tinycnn-c-quality-v1"
+          assert md["dataset_sources"]==["msambare/fer2013"]
+          assert md["enable_gpu"] and md["enable_internet"]
+          nb=json.loads((d/md["code_file"]).read_text())
+          src="\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"]=="code")
+          assert "TinyCNNC().to(device)" in src
+          assert "CPU audit and Kaggle dataset mismatch" in src
+          assert "SEEDS = (2026, 2027)" in src
+          print("C 16/32/64/64 + quality-v1 + two seeds VERIFIED",flush=True)
+          PY
+      - name: Submit real TinyCNN-C GPU notebook to Kaggle
+        run: kaggle kernels push -p build/kaggle_c_quality_v1 --accelerator NvidiaTeslaT4
+      - name: Check saved C GPU internet and attached dataset
+        shell: bash
+        run: |
+          mkdir -p build/c-remote
+          kaggle kernels pull "$MODEL_C" -p build/c-remote -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path("build/c-remote/kernel-metadata.json").read_text())
+          print(m["id"],"gpu",m["enable_gpu"],"network",m["enable_internet"],"data",m["dataset_sources"])
+          assert m["enable_gpu"] and m["enable_internet"]
+          assert m["dataset_sources"]==["msambare/fer2013"]
+          PY
+      - name: Wait for two real C training runs to complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "C training: https://www.kaggle.com/code/$MODEL_C"
+          for n in $(seq 1 445); do
+              s=$(kaggle kernels status "$MODEL_C" 2>&1)
+              echo "C status poll $n: $s"
+              if echo "$s" | grep -q 'KernelWorkerStatus.COMPLETE'; then exit 0; fi
+              if echo "$s" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCEL_REQUESTED|CANCEL_ACKNOWLEDGED|CANCELLED)'; then
+                  echo "::error::C Kaggle job failed or cancelled; no result claimed"
+                  exit 1
+              fi
+              sleep 40
+          done
+          echo "::error::C exceeds 297-minute wait"
+          exit 1
+      - name: Download actual C checkpoints and verify heldout test and two seeds
+        shell: bash
+        run: |
+          mkdir -p model-c-artifacts
+          kaggle kernels output "$MODEL_C" -p model-c-artifacts
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          base=Path("model-c-artifacts")
+          reports=list(base.rglob("results.json"))
+          assert len(reports)==1,reports
+          path=reports[0]
+          r=json.loads(path.read_text())
+          assert r["architecture"]=="Tiny-CNN-C 16/32/64/64"
+          assert set(r["test_metrics_per_seed"])=={"2026","2027"}
+          assert set(r["seed_validation_results"])=={"2026","2027"}
+          assert r["selected_seed_by_validation"] in (2026,2027)
+          q=json.loads(Path("build/reference-quality/optimized/quality-report.json").read_text())
+          assert r["dataset_quality"]["heldout_test_sha256"]==q["heldout_test_sha256"]
+          assert r["dataset_quality"]["cleaned_counts"]==q["cleaned_counts"]
+          for seed in (2026,2027):
+              ckpt=path.parent/f"seed_{seed}"/"best.pt"
+              assert ckpt.is_file() and ckpt.stat().st_size>1000,ckpt
+              print("C actual checkpoint",seed,ckpt.stat().st_size,"bytes",flush=True)
+          print("VERIFIED REAL TEST ACCURACY",r["test_accuracy_mean"],flush=True)
+          print("VERIFIED REAL TEST MACRO-F1",r["test_macro_f1_mean"],flush=True)
+          PY
+      - name: Archive independently validated C model + manifest and metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinycnn-C-16-32-64-64-quality-v1-two-seeds
+          path: model-c-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Print Kaggle C failures when available
+        if: failure()
+        shell: bash
+        run: kaggle kernels logs "$MODEL_C" || true
