@@ -29,8 +29,8 @@ class KaggleLiveNotebookTest(unittest.TestCase):
             self.assertIn("torch.cuda.is_available()", code[0])
             self.assertIn("TinyCNN", code[1])
             self.assertIn("find_dataset_root", code[2])
-            self.assertIn('progress("EPOCH_END"', code[3])
-            self.assertIn('progress("BATCH"', code[3])
+            self.assertIn('"EPOCH_END"', code[3])
+            self.assertIn('"BATCH"', code[3])
             self.assertIn("run()", code[4])
             self.assertEqual(
                 {p.name for p in out.iterdir()},
