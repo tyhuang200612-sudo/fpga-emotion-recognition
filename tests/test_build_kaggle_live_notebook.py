@@ -17,7 +17,7 @@ class KaggleLiveNotebookTest(unittest.TestCase):
             self.assertTrue(meta["enable_gpu"])
             self.assertEqual(meta["dataset_sources"], ["msambare/fer2013"])
             self.assertEqual(meta["machine_shape"], "NvidiaTeslaT4")
-            self.assertEqual(meta["id"], "tyhuanga/fpga-tinycnn-live-v2")
+            self.assertEqual(meta["id"], "tyhuanga/fpga-tinycnn-live-training-v2")
 
             nb = json.loads((out / meta["code_file"]).read_text(encoding="utf-8"))
             self.assertEqual(nb["nbformat"], 4)
