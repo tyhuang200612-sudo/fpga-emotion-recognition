@@ -1,0 +1,18 @@
+# Raw face images and annotations must not be committed
+data/
+datasets/
+runs/
+checkpoints/
+export/
+reports/
+*.pt
+*.pth
+*.onnx
+*.zip
+*.tar
+*.tar.gz
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.env
