@@ -26,6 +26,8 @@ import java.util.Locale;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.HashSet;
+import java.util.Set;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
@@ -39,6 +41,10 @@ public class MainActivity extends Activity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private volatile boolean running = false;
     private String lastId = "";
+    // Rehydrate the visible UI from server history on every app launch.
+    // Previous versions saved lastId but NOT the corresponding UI, leaving a blank screen.
+    private boolean historyLoaded = false;
+    private final Set<String> seenIds = new HashSet<>();
     private long latestEventEpoch = 0;
     private String latestEventName = "";
     private TextView statusText, stageText, gpuText, epochText, batchText, lossText, accuracyText, f1Text, updatedText, terminal;
@@ -59,7 +65,9 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        lastId = getSharedPreferences("fpga_monitor", MODE_PRIVATE).getString("last_id", "");
+        // Never skip previous events on a fresh Activity; replay history first.
+        lastId = "";
+        historyLoaded = false;
         render();
     }
     @Override protected void onStart() {
@@ -131,7 +139,7 @@ public class MainActivity extends Activity {
 
         LinearLayout console=card(root);
         add(console,text("终端日志",17,DARK,true),0);
-        add(console,text("只显示从 Kaggle 训练程序实际接收到的消息",11,MUTED,false),5);
+        add(console,text("启动时恢复最近的真实历史消息，并继续接收新进度",11,MUTED,false),5);
         terminal=text("正在等待真实训练输出…",12,Color.rgb(171,245,205),false);
         terminal.setTypeface(Typeface.MONOSPACE);
         terminal.setTextIsSelectable(true);
@@ -209,7 +217,7 @@ public class MainActivity extends Activity {
     private void fetchProgress() {
         HttpURLConnection conn=null;
         try {
-            String since=lastId.isEmpty()?"all":URLEncoder.encode(lastId,"UTF-8");
+            String since=(!historyLoaded || lastId.isEmpty())?"all":URLEncoder.encode(lastId,"UTF-8");
             URL endpoint=new URL(ENDPOINT+since);
             conn=(HttpURLConnection)endpoint.openConnection();
             conn.setConnectTimeout(8000);conn.setReadTimeout(10000);
@@ -219,15 +227,15 @@ public class MainActivity extends Activity {
             String row;
             while((row=rd.readLine())!=null) {
                 JSONObject evt=new JSONObject(row);
-                final JSONObject snapshot=evt;
                 String eventId=evt.optString("id","");
-                if(eventId.length()>0) {
-                    lastId=eventId;
-                    getSharedPreferences("fpga_monitor",MODE_PRIVATE).edit().putString("last_id",lastId).apply();
-                }
+                // ntfy may repeat events across polls: deduplicate by immutable id.
+                if(eventId.length()>0 && !seenIds.add(eventId))continue;
+                if(eventId.length()>0)lastId=eventId;
+                final JSONObject snapshot=evt;
                 handler.post(()->handleEvent(snapshot));
             }
             rd.close();
+            historyLoaded=true;
             handler.post(()->{
                 if(latestEventEpoch>0 && System.currentTimeMillis()/1000-latestEventEpoch>600
                         && !latestEventName.equals("COMPLETE") && !latestEventName.equals("ERROR")) {
