@@ -1,0 +1,51 @@
+name: Inspect Kaggle training status (read-only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-training-status.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KERNEL: tyhuanga/fpga-tinycnn-three-emotions
+    steps:
+      - name: Ensure Kaggle API token exists
+        shell: bash
+        run: |
+          test -n "$KAGGLE_API_TOKEN" || { echo "::error::KAGGLE_API_TOKEN not configured"; exit 1; }
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Read current Kaggle worker status
+        shell: bash
+        run: |
+          kaggle kernels status "$KERNEL"
+      - name: Read non-secret Kaggle run messages
+        shell: bash
+        run: |
+          kaggle kernels logs "$KERNEL" > kaggle_status_log.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          raw=Path("kaggle_status_log.txt").read_text(encoding="utf-8",errors="replace")
+          try:
+              events=json.loads(raw)
+          except json.JSONDecodeError:
+              print("Non-JSON Kaggle log, preview:")
+              print(raw[-7500:])
+          else:
+              records=[e for e in events if isinstance(e,dict) and isinstance(e.get("data"),str)]
+              print("Kaggle output events:",len(records))
+              for item in records[-60:]:
+                  line=item["data"]
+                  if "Traceback" in line or "RuntimeError" in line or "Error" in line or "SEED=" in line or "EPOCH=" in line or "TEST seed=" in line or "TRAINING COMPLETE" in line or "GPU:" in line or "Audit:" in line:
+                      print(line[:450])
+          PY
