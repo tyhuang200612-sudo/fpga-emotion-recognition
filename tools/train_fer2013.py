@@ -44,6 +44,11 @@ def progress(event: str, **details):
         fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
         fp.flush()
     print("[FPGA-TRAIN]", json.dumps(payload, ensure_ascii=False), flush=True)
+    # V3 Kaggle notebook injects the safe outbound telemetry helper into globals.
+    # Outside V3 the original local progress file and console still work.
+    publisher = globals().get("publish_progress")
+    if callable(publisher):
+        publisher(payload)
 
 
 class FaceDataset(Dataset):
