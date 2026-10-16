@@ -1,0 +1,57 @@
+name: Diagnose Kaggle V2 live stdout (read only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-v2-stream-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - name: Install requests for Kaggle live log stream
+        run: python -m pip install requests
+      - name: Probe V2 Version 4 streaming logs without changing any session
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, requests
+          url="https://api.kaggle.com/v1/kernels.KernelsApiService/GetKernelSessionLogsStream"
+          payload={"userName":"tyhuanga","kernelSlug":"fpga-tinycnn-live-training-v2","versionLabel":"4","waitForLogsUrlSeconds":3}
+          token=os.environ.get("KAGGLE_API_TOKEN","")
+          if not token: raise SystemExit("Kaggle token unavailable")
+          headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"}
+          print("PROBE kernel=tyhuanga/fpga-tinycnn-live-training-v2 version=4",flush=True)
+          try:
+              with requests.post(url,headers=headers,json=payload,stream=True,
+                                 timeout=(12,10),allow_redirects=True) as r:
+                  print("PROBE HTTP",r.status_code,"Content-Type:",r.headers.get("Content-Type",""),flush=True)
+                  if r.status_code!=200:
+                      print("PROBE no live stream yet; Kaggle may not have allocated a worker or may not expose its URL.",flush=True)
+                  else:
+                      import time
+                      deadline=time.monotonic()+16
+                      count=0
+                      for raw in r.iter_lines(chunk_size=512,decode_unicode=True):
+                          if not raw: continue
+                          line=raw if isinstance(raw,str) else raw.decode("utf-8","replace")
+                          if line.startswith("data:"):
+                              print("LIVE EVENT:",line[:750],flush=True)
+                              count+=1
+                          elif "END_OF_LOG" in line:
+                              print("LIVE END_OF_LOG",flush=True)
+                              break
+                          if count>=15 or time.monotonic()>deadline:break
+                      print("PROBE observed data event count:",count,flush=True)
+          except requests.RequestException as e:
+              print("PROBE transport unavailable:",type(e).__name__,str(e)[:180],flush=True)
+          print("PROBE COMPLETE; Kaggle training unchanged.",flush=True)
+          PY
