@@ -1,0 +1,95 @@
+name: Verify live monitoring channel and prepare V3 (no GPU)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-v3-preflight.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      TOPIC: fpga-train-a3d857600d07e8b36b045a168d8af107
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate complete Kaggle V3 notebook and telemetry safety
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p test_build_kaggle_monitor_v3.py -v
+          python -m tools.build_kaggle_monitor_v3 --out build/kaggle_monitor_v3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          nb=json.loads(Path("build/kaggle_monitor_v3/fpga-tinycnn-monitor-v3.ipynb").read_text())
+          for i,cell in enumerate(nb["cells"]):
+              if cell["cell_type"]=="code":
+                  compile("".join(cell["source"]),f"cell_{i}","exec")
+          md=json.loads(Path("build/kaggle_monitor_v3/kernel-metadata.json").read_text())
+          assert md["enable_gpu"] and md["enable_internet"]
+          assert md["dataset_sources"]==["msambare/fer2013"]
+          print("Kaggle V3 GPU and internet metadata valid",flush=True)
+          PY
+      - name: Confirm public telemetry accepts and returns test events
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, time, urllib.request
+          from tools.telemetry import PROGRESS_URL
+          topic=PROGRESS_URL.rsplit("/",1)[-1]
+          test_id="GH-V3-DELIVERY-PROBE"
+          payload=json.dumps({"event":"MONITOR_TEST","message":test_id},separators=(",",":"))
+          req=urllib.request.Request(PROGRESS_URL,data=payload.encode(),method="POST")
+          with urllib.request.urlopen(req,timeout=12) as response:
+              print("Push HTTP",response.status,flush=True)
+              assert response.status in (200,201,202)
+          # ntfy JSON poll includes last cached messages. Do not print actual private metrics.
+          with urllib.request.urlopen(PROGRESS_URL+"/json?poll=1&since=all",timeout=12) as response:
+              messages=response.read(250000).decode("utf-8","replace").splitlines()
+          confirmed=False
+          for line in messages:
+              try:
+                  data=json.loads(line)
+                  if test_id in data.get("message",""): confirmed=True
+              except ValueError:pass
+          if not confirmed: raise RuntimeError("Published event not visible on read endpoint")
+          print("END-TO-END MONITOR TEST PASSED; only synthetic event sent",flush=True)
+          PY
+      - name: Install official Kaggle CLI with safe upload mode
+        shell: bash
+        run: |
+          test -n "$KAGGLE_API_TOKEN"
+          python -m pip install 'git+https://github.com/Kaggle/kaggle-cli.git@4f2dd12'
+          kaggle kernels push --help | grep -F -- '--no-run'
+      - name: Save V3 notebook without starting GPU
+        shell: bash
+        run: |
+          kaggle kernels push -p build/kaggle_monitor_v3 --no-run
+      - name: Verify private V3 notebook setup
+        shell: bash
+        run: |
+          mkdir -p build/v3-remote
+          kaggle kernels pull tyhuanga/fpga-tinycnn-monitor-v3 -p build/v3-remote -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          md=json.loads(Path("build/v3-remote/kernel-metadata.json").read_text())
+          print("Kaggle notebook:",md["id"])
+          print("gpu:",md.get("enable_gpu"),"internet:",md.get("enable_internet"))
+          print("dataset:",md.get("dataset_sources"))
+          assert md["enable_gpu"] and md["enable_internet"]
+          assert md["dataset_sources"]==["msambare/fer2013"]
+          PY
+          echo "PREPARED ONLY; training not started."
