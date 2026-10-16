@@ -1,4 +1,5 @@
 name: FER2013 C quality audit (CPU first)
+# CPU-only quality tests isolated from PyTorch model tests.
 
 on:
   workflow_dispatch:
