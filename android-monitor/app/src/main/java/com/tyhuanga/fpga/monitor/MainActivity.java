@@ -155,9 +155,10 @@ public class MainActivity extends Activity {
         terminal.setText(lines.toString());
     }
     private void updateState(String kind) {
+        if (!kind.equals("ERROR")) statusText.setTextColor(GREEN);
         switch(kind) {
             case "MONITOR_TEST": statusText.setText("● 监控连通测试成功");break;
-            case "GPU_READY": case "START": case "AUDIT_START":
+            case "GPU_READY": case "START": case "DATASET_FOUND": case "AUDIT_START":
             case "AUDIT_COMPLETE": case "SEED_START": case "BATCH":
             case "EPOCH_END": case "SEED_FINISHED": case "TEST_START":
             case "TEST_FINISHED": statusText.setText("● 已收到训练程序的实际输出");break;
