@@ -1,0 +1,28 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.tyhuanga.fpga.camerac'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.tyhuanga.fpga.camerac'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0-C-2026'
+    }
+    buildTypes { release { minifyEnabled false } }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    packaging {
+        resources { excludes += ['META-INF/INDEX.LIST', 'META-INF/io.netty.versions.properties'] }
+    }
+}
+
+dependencies {
+    implementation 'com.google.mlkit:face-detection:16.1.7'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.20.0'
+}
