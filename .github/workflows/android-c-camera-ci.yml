@@ -1,0 +1,38 @@
+name: Verify C Live Camera APK compiles (no model, no release)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'android-camera-c/**'
+      - 'tools/export_onnx_c.py'
+      - '.github/workflows/android-c-camera-ci.yml'
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout live camera code
+        uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify Android SDK
+        run: |
+          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Compile native camera and ONNX inference code
+        working-directory: android-camera-c
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+      - name: Verify that no untrained model is packaged
+        run: |
+          test -s android-camera-c/app/build/outputs/apk/debug/app-debug.apk
+          test ! -e android-camera-c/app/src/main/assets/model.onnx
+          echo "Compiled only. APK not distributed without real checkpoint."
