@@ -1,0 +1,159 @@
+name: Train TinyCNN-B 16-32-64 twice on Kaggle T4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-b-two-seeds-train.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-fpga-tinycnn-b-two-seeds
+  cancel-in-progress: false
+
+jobs:
+  train-b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+      PRIOR_A: tyhuanga/fpga-tinycnn-monitor-v3
+      MODEL_B: tyhuanga/fpga-tinycnn-b-two-seeds
+    steps:
+      - name: Checkout model and Kaggle notebook generator
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify Kaggle secret
+        run: test -n "$KAGGLE_API_TOKEN"
+      - name: Install official Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Verify exactly two training runs and independent Kaggle artifacts
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p test_kaggle_b_two_seeds.py -v
+          python -m tools.build_kaggle_b_two_seeds --out build/kaggle_b_two_seeds
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          folder=Path("build/kaggle_b_two_seeds")
+          meta=json.loads((folder/"kernel-metadata.json").read_text())
+          assert meta["id"]=="tyhuanga/fpga-tinycnn-b-two-seeds"
+          assert meta["enable_gpu"] and meta["enable_internet"]
+          assert meta["dataset_sources"]==["msambare/fer2013"]
+          notebook=json.loads((folder/meta["code_file"]).read_text())
+          sources=["".join(c["source"]) for c in notebook["cells"] if c["cell_type"]=="code"]
+          for i, src in enumerate(sources): compile(src,f"cell-{i}","exec")
+          assert any("SEEDS = (2026, 2027)" in src for src in sources)
+          assert any("TinyCNN(channels=(16, 32, 64))" in src for src in sources)
+          print("READY: B x two seeds, valid CUDA, data, telemetry, isolated checkpoint directory",flush=True)
+          PY
+      - name: Wait for running A to finish without overlapping Kaggle GPUs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 225); do
+            result=$(kaggle kernels status "$PRIOR_A" 2>&1) || {
+              echo "::error::Cannot verify prior A job. Refusing simultaneous GPU execution."
+              exit 1
+            }
+            echo "A status check $n: $result"
+            if echo "$result" | grep -Eq 'KernelWorkerStatus\.(COMPLETE|ERROR|CANCEL_ACKNOWLEDGED|CANCELLED)'; then
+              echo "A no longer occupies Kaggle training GPU. Proceed with B."
+              exit 0
+            fi
+            sleep 40
+          done
+          echo "::error::A did not leave active state within 150 minutes. B not started."
+          exit 1
+      - name: Reject duplicate B job if already active
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(kaggle kernels status "$MODEL_B" 2>&1) || true
+          echo "Prior B status (if any): $response"
+          if echo "$response" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED)'; then
+            echo "::error::B training already exists; refusing a duplicate GPU job."
+            exit 1
+          fi
+      - name: Start actual B two-seed GPU training
+        shell: bash
+        run: |
+          kaggle kernels push -p build/kaggle_b_two_seeds --accelerator NvidiaTeslaT4
+      - name: Verify B GPU/internet/data config saved in Kaggle
+        shell: bash
+        run: |
+          mkdir -p build/b-remote
+          kaggle kernels pull "$MODEL_B" -p build/b-remote -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          metadata=json.loads(Path("build/b-remote/kernel-metadata.json").read_text())
+          print("Kaggle B:",metadata.get("id"),flush=True)
+          print("GPU requested:",metadata.get("enable_gpu"),"Internet:",metadata.get("enable_internet"),flush=True)
+          print("Dataset:",metadata.get("dataset_sources"),flush=True)
+          assert metadata["enable_gpu"] and metadata["enable_internet"]
+          assert metadata["dataset_sources"]==["msambare/fer2013"]
+          PY
+          echo "B notebook: https://www.kaggle.com/code/$MODEL_B"
+      - name: Wait until BOTH real B checkpoints are finished
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 425); do
+            response=$(kaggle kernels status "$MODEL_B" 2>&1)
+            echo "B status poll $n: $response"
+            if echo "$response" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+              echo "B Kaggle notebook COMPLETE; verify actual result files next."
+              exit 0
+            fi
+            if echo "$response" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCEL_REQUESTED|CANCEL_ACKNOWLEDGED|CANCELLED)'; then
+              echo "::error::B Kaggle job failed or was cancelled. No trained model claimed."
+              exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::B did not finish within ~284 min."
+          exit 1
+      - name: Download both B checkpoints and validate results
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model-b-artifacts
+          kaggle kernels output "$MODEL_B" -p model-b-artifacts
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("model-b-artifacts")
+          hits=list(root.rglob("results.json"))
+          if len(hits)!=1:
+              raise SystemExit(f"Expected one B results.json, got {len(hits)}")
+          path=hits[0]
+          result=json.loads(path.read_text(encoding="utf-8"))
+          assert result["architecture"]=="Tiny-CNN-B 16/32/64", result.get("architecture")
+          for field in ("seed_validation_results","test_metrics_per_seed"):
+              assert set(result[field])=={"2026","2027"},(field,list(result[field]))
+          assert result["selected_seed_by_validation"] in (2026,2027)
+          for seed in (2026,2027):
+              ckpt=path.parent/f"seed_{seed}"/"best.pt"
+              assert ckpt.is_file() and ckpt.stat().st_size>1000,ckpt
+              print(f"Validated B checkpoint seed={seed}, bytes={ckpt.stat().st_size}",flush=True)
+          print("Two real B training results and checkpoints verified",flush=True)
+          PY
+      - name: Upload B model weights, training logs, test statistics
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinycnn-B-16-32-64-two-seeds-trained
+          path: model-b-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Print Kaggle B errors if training failed
+        if: failure()
+        shell: bash
+        run: kaggle kernels logs "$MODEL_B" || true
