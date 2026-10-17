@@ -60,3 +60,13 @@
 - 完整本地交接包 `FPGA_Emotion_C2_C3_Handoff_2026-10-17.zip` 已存在当前对话的下载资产中，含 `C2_results.zip`、`C3_results.zip`、`manifest.json`，本地 SHA256 **597a2bdbaa8504bf96ddf9302a1f228fdeb37a4d0d4de2b43b57deaf90e493e5**。
 - 试图创建 Kaggle 私有备份 `tyhuanga/fpga-emotion-handoff-c2-c3` 的 GitHub Action **39001467186 为 failure**：上传命令返回成功，但超过等待期仍无法验证数据集文件列表。**私有 Kaggle 交接备份的可下载性尚未确认，不能标记“已永久备份成功”**。后续交接须核实这一点。
 - C4 独立模型归档工件只有 30 天保留期；正式交接前需要下载/核验并合并到最新交接包，或写入经过验证的私有持久备份。
+
+
+## C5 空间池化结构消融（2026-10-17）
+- 设计与测试文档：[C5 GAP1 vs GAP2 验证协议](c5-spatial-ablation-protocol.md)；对照组维持原 TinyCNN-C 四层 16/32/64/64；实验组仅末端 1×1 GAP→2×2 GAP，FC权重增加576（60,240→60,816，不含BN/偏置）。
+- 资源暂是**理论估计，不是安路 FPGA 面积/时序、INT8 精度结论**；测试证明扩展头从C2026权重初始化后在训练前与原C输出数值近似一致。
+- 验证独立工作流：[GitHub Actions C5 #39004573026](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39004573026)，Kaggle私有 notebook [fpga-c5-gap1-vs-gap2-ablation](https://www.kaggle.com/code/tyhuanga/fpga-c5-gap1-vs-gap2-ablation)。
+- 对照两种结构×两个 seed：20261021、20261022；相同13,571 train +2,979 val数据、相同增强训练、参数和原版C初始化，不读取冻结官方TEST或手机私有样本，不重新训练教师。
+- GitHub提交源码：`src/model_c5.py`、`tools/train_c5.py`、`tools/build_kaggle_c5.py`、`tests/test_c5_spatial.py`、`.github/workflows/kaggle-c5-spatial-ablation.yml`。
+- **截止编写时状态：GPU运行中**，未产生可验证的C5成绩/权重，不能声称已改善或已可部署；归档工件名预留 `TinyCNN-C5-GAP1-vs-GAP2-TwoSeeds-ValidationOnly`，仅任务成功后才能引用下载和校验哈希。
+- 本轮无用户人脸图提交到GitHub；`docs/camera-teacher-student-diagnostic-2026-10-17.md` 仅为不含照片和身份的汇总。
