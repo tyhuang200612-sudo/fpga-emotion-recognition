@@ -1,0 +1,108 @@
+name: Test frozen TinyCNN-C INT8 once on untouched FER2013 test split
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/c-int8-frozen-test.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tinycnn-c-int8-untouched-test-once
+  cancel-in-progress: false
+
+jobs:
+  locked-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Read-only checkout of C-2026 integer evaluation
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download actual C-2026 checkpoint and immutable quality manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: tinycnn-C-16-32-64-64-quality-v1-two-seeds
+          path: trained-c
+          run-id: 38943721697
+          github-token: ${{ github.token }}
+      - name: Download already frozen PTQ artifact from completed FULL-validation run
+        uses: actions/download-artifact@v4
+        with:
+          name: TinyCNN-C-2026-INT8-PTQ-CPU-Report-and-RTL-Memory
+          path: frozen-c-int8
+          run-id: 38993667346
+          github-token: ${{ github.token }}
+      - name: Install CPU-only reference dependencies
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install Pillow numpy kaggle
+      - name: Freeze checkpoint, quantization parameters and test manifest before evaluation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,hashlib
+          ck=Path('trained-c/fpga-fer2013-c-quality-v1/seed_2026/best.pt')
+          report=json.loads(Path('frozen-c-int8/quant_report.json').read_text())
+          assert report['source_checkpoint_sha256']==hashlib.sha256(ck.read_bytes()).hexdigest()
+          assert not report['test_used'] and not report['bitstream_ready']
+          assert report['validation_subset']['n']==2979
+          assert report['calibration']['training_images']==256
+          quality=Path('trained-c/fpga-fer2013-c-quality-v1/quality-v1')
+          assert hashlib.sha256((quality/'test.csv').read_bytes()).hexdigest()==json.loads(
+              (quality/'quality-report.json').read_text())['heldout_test_sha256']
+          print('TRUE LOCKED INT8 TEST input and model hashes confirmed',flush=True)
+          PY
+      - name: Download public FER2013 images for independent one-time TEST
+        shell: bash
+        run: |
+          test -n "$KAGGLE_API_TOKEN"
+          mkdir -p /tmp/frozen-c-fer2013
+          kaggle datasets download -d msambare/fer2013 -p /tmp/frozen-c-fer2013
+          unzip -q /tmp/frozen-c-fer2013/fer2013.zip -d /tmp/frozen-c-fer2013
+          python - <<'PY'
+          from pathlib import Path
+          from tools.prepare_fer2013 import find_dataset_root
+          root=find_dataset_root(Path('/tmp/frozen-c-fer2013'))
+          Path('/tmp/frozen-c-dataset-root.txt').write_text(str(root))
+          print('Original dataset root verified',flush=True)
+          PY
+      - name: Evaluate exact integer C model on all 4251 official TEST images
+        shell: bash
+        run: |
+          root="$(cat /tmp/frozen-c-dataset-root.txt)"
+          python -m tools.evaluate_c_int8_frozen \
+            --checkpoint trained-c/fpga-fer2013-c-quality-v1/seed_2026/best.pt \
+            --frozen-ptq-dir frozen-c-int8 \
+            --dataset-root "$root" \
+            --test-manifest trained-c/fpga-fer2013-c-quality-v1/quality-v1/test.csv \
+            --quality-report trained-c/fpga-fer2013-c-quality-v1/quality-v1/quality-report.json \
+            --out build/c2026-frozen-int8-test
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('build/c2026-frozen-int8-test/frozen_int8_test_result.json').read_text())
+          assert report['n']==4251 and not report['test_used_to_tune']
+          print('True held-out INT8 test accuracy:',report['int8_accuracy'])
+          print('True held-out FP32 accuracy:',report['fp32_accuracy'])
+          print('INT8 accuracy delta in pp:',report['int8_minus_fp32_pp'])
+          PY
+      - name: Archive final independent INT8 comparison, do not replace frozen PTQ
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C-2026-Frozen-INT8-OneTime-Independent-Test
+          path: build/c2026-frozen-int8-test/
+          retention-days: 30
+          if-no-files-found: error
