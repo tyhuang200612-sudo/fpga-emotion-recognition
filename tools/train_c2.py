@@ -218,9 +218,13 @@ def run():
     device=torch.device("cuda")
     from tools.prepare_fer2013 import find_dataset_root
     dataset_root=find_dataset_root(Path("/kaggle/input/fer2013"))
-    root=Path("/kaggle/input/fpga-c2026-locked-baseline")
-    matches=list(root.rglob("c2026-baseline.pt"))
-    if len(matches)!=1:raise RuntimeError("Expected exactly one real C2026 checkpoint in private Kaggle dataset")
+    # Kaggle mounts datasets either flat or under /kaggle/input/datasets/owner/slug.
+    # Recursively find the *exact filename*, do not assume the mount layout.
+    input_root=Path("/kaggle/input")
+    matches=list(input_root.rglob("c2026-baseline.pt"))
+    if len(matches)!=1:
+        print("KAGGLE INPUT MOUNTS:",[str(x) for x in input_root.iterdir()],flush=True)
+        raise RuntimeError(f"Expected exactly one genuine private C2026 checkpoint, found {len(matches)}")
     model_file=matches[0];files=model_file.parent
     train_rows=load_rows(files/"train.csv")
     val_rows=load_rows(files/"val.csv")
