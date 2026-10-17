@@ -1,0 +1,88 @@
+name: "C7 result recovery: collect completed Kaggle run (no GPU)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  read-only-collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KERNEL: tyhuanga/fpga-c7-gap2-fixed25-deterministic
+    steps:
+      - name: Setup Python3.11 and Kaggle
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install kaggle
+
+      - name: Refuse collection until Kaggle training is COMPLETE
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          status=$(kaggle kernels status "$KERNEL")
+          echo "Original C7 kernel status: $status"
+          if ! echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+            echo 'No result will be claimed or written; Kaggle has not completed successfully.'
+            exit 1
+          fi
+
+      - name: Read existing C7 weights, 100 epochs and evaluation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p c7-existing-results
+          kaggle kernels output "$KERNEL" -p c7-existing-results
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json
+          roots=list(Path('c7-existing-results').rglob('results.json'))
+          assert len(roots)==1,roots
+          root=roots[0].parent
+          result=json.loads(roots[0].read_text())
+          assert result['experiment'].startswith('C7 reproducibility-controlled fixed25')
+          assert result['student_seeds']==[20261021,20261022]
+          assert result['train_val_count']==[13571,2979]
+          assert result['all_four_runs_completed_25_epochs']
+          assert result['deterministic_algorithms']
+          assert result['teacher_checkpoint_sha256']=='ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c'
+          assert not result['test_evaluated'] and not result['phone_camera_evaluated']
+          assert result['no_deployment'] and not result['int8_fpga_verified']
+          manifests=[]
+          for mode in ('GAP2_CE_control','GAP2_C3_KD'):
+            for seed in (20261021,20261022):
+              d=root/mode/('seed_'+str(seed))
+              weights=d/'best.pt'
+              assert weights.stat().st_size>100000,weights
+              h=json.loads((d/'history.json').read_text())
+              assert len(h['epochs'])==25 and h['epochs'][-1]['epoch']==25
+              manifests.append({'mode':mode,'seed':seed,'weight_sha256':hashlib.sha256(weights.read_bytes()).hexdigest(),
+                'f1':result['variants'][mode]['per_seed'][str(seed)]['validation']['macro_f1']})
+          events=[json.loads(x) for x in (root/'live-progress.jsonl').read_text().splitlines() if x.strip()]
+          assert sum(x['stage']=='EPOCH_END' for x in events)==100
+          out=Path('c7-existing-results/C7-read-only-verification.json')
+          out.write_text(json.dumps({'all_100_epochs_verified':True,'weights':manifests,
+            'teacher_hash':result['teacher_checkpoint_sha256'],
+            'test_evaluated':False,'phone_images_evaluated':False,
+            'variants':{
+              k:{'mean_macro_f1':v['mean_macro_f1'],
+                'mean_pair_errors':v['mean_pair_errors']}
+              for k,v in result['variants'].items()},
+            'robust_improvement_gate':result['robust_improvement_gate']
+            },indent=2)+'\n')
+          print('Verified C7 100 epochs and 4 genuine checkpoint files')
+          print(out.read_text())
+          PY
+
+      - name: Archive read-only C7 retrieval (never restart training)
+        uses: actions/upload-artifact@v4
+        with:
+          name: C7-Existing-Kaggle-Result-Recovery-No-Retrain
+          path: c7-existing-results/
+          retention-days: 30
+          if-no-files-found: error
