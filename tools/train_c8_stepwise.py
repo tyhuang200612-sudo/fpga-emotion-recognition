@@ -33,6 +33,15 @@ def c8_setup():
         raise RuntimeError("C8 requires real deterministic Kaggle CUDA GPU")
     torch.set_num_threads(4)
     device=torch.device("cuda")
+    # Fail fast BEFORE downloading/loading all data if the CUDA backend does
+    # not support the replacement GAP2 backward in strict deterministic mode.
+    pool_probe=torch.zeros((1,64,12,12),device=device,requires_grad=True)
+    nn.AvgPool2d(kernel_size=6,stride=6)(pool_probe).sum().backward()
+    if pool_probe.grad is None or pool_probe.grad.shape!=pool_probe.shape:
+        raise RuntimeError("Deterministic fixed GAP2 CUDA backward smoke test failed")
+    del pool_probe
+    c6_progress("C8_FIXEDPOOL_CUDA_BACKWARD_OK",operation="AvgPool2d(6,6)",
+                deterministic=True)
     c6_progress("C8_SETUP_START",cuda=torch.version.cuda,torch_version=torch.__version__,
                 cudnn=torch.backends.cudnn.version(),
                 total_epochs=C8_NUM_EPOCHS,epoch_cells=C8_EPOCHS_PER_CELL)
