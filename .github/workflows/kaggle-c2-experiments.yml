@@ -79,7 +79,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kaggle datasets create -p build/c2-baseline
+          if kaggle datasets files "$BASELINE_DATASET" >/tmp/c2_existing_dataset_files.txt 2>&1; then
+            echo "Reusing existing private C2026 baseline dataset; do not overwrite archived model"
+            cat /tmp/c2_existing_dataset_files.txt
+          else
+            kaggle datasets create -p build/c2-baseline
+          fi
       - name: Generate isolated three-experiment C2 Kaggle notebook
         shell: bash
         run: |
@@ -113,7 +118,7 @@ jobs:
           import json
           from pathlib import Path
           m=json.loads(Path('build/c2-remote/kernel-metadata.json').read_text())
-          assert m['enable_gpu'] and m['dataset_sources']==['msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline']
+          assert m['enable_gpu'] and set(m['dataset_sources'])=={'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline'}
           assert m['is_private']
           print('Kaggle C2 GPU + private data successfully attached',flush=True)
           PY
