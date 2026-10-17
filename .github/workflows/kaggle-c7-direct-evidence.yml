@@ -34,6 +34,7 @@ jobs:
             echo "::error::Kaggle authentication missing"
             exit 1
           fi
+          echo "=== ON-DEMAND C7 EVIDENCE RECHECK, 2026-10-17 15:33 UTC+08 ==="
           echo "=== DIRECT Kaggle status, not GitHub monitor status ==="
           kaggle kernels status "$TARGET_KERNEL" 2>&1 | tee /tmp/c7-state.txt
           echo "=== DIRECT Kaggle log query ==="
