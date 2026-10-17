@@ -1,0 +1,37 @@
+name: "C8 offline CPU tests (no Kaggle GPU)"
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/c8-offline-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU-only Torch
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Prove C8 20 five-epoch stages and frozen data safeguards
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p test_c8_stepwise.py -v
+          python -m tools.build_kaggle_c8 --out build/kaggle_c8
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          out=Path("build/kaggle_c8")
+          m=json.loads((out/"kernel-metadata.json").read_text())
+          nb=json.loads((out/m["code_file"]).read_text())
+          assert len(nb["cells"])==37
+          assert sum("c8_epochs(5)" in "".join(c["source"]) for c in nb["cells"])==20
+          print("All C8 staged cell syntax and CPU structural checks PASS.")
+          PY
