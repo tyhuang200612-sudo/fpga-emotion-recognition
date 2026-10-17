@@ -1,0 +1,225 @@
+name: "C7: deterministic fixed25 paired GAP2 CE vs C3 teacher KD"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c7-deterministic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c7-fixed25-deterministic-one-run
+  cancel-in-progress: false
+
+jobs:
+  audit-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      EXPERIMENT: tyhuanga/fpga-c7-gap2-fixed25-deterministic
+      TEACHER_DATASET: tyhuanga/fpga-c3-locked-teacher
+    steps:
+      - name: Checkout frozen C5 C6 C3 reference and C7 builder
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Retrieve immutable original C5 and C6 archives by artifact ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/c7-audit
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/tyhuang200612-sudo/fpga-emotion-recognition/actions/artifacts/12090472500/zip" \
+            -o build/c7-audit/C5-original.zip
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/tyhuang200612-sudo/fpga-emotion-recognition/actions/artifacts/12091822756/zip" \
+            -o build/c7-audit/C6-original.zip
+          python - <<'PY'
+          import hashlib,zipfile
+          from pathlib import Path
+          expected={
+            'C5-original.zip':'19f43cc26cdef6c308d9fbfafcb6b383b3f522823356b7b51ab74416369a0055',
+            'C6-original.zip':'1e3d042a15c4980bb65675cd6cd515ad957fd70384353b52a7ef3a816015d241',
+          }
+          for name,sha in expected.items():
+            p=Path('build/c7-audit')/name
+            if hashlib.sha256(p.read_bytes()).hexdigest()!=sha:
+              raise RuntimeError('Unexpected archived model artifact SHA256: '+name)
+            with zipfile.ZipFile(p) as z:
+              assert len(z.namelist())>7
+          print('Exact immutable C5 and C6 archives verified against prior validated SHA256')
+          PY
+
+      - name: Diagnose actual early stopping and prove unchanged original TEST hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.audit_c5_c6_repro \
+            --c5 build/c7-audit/C5-original.zip \
+            --c6 build/c7-audit/C6-original.zip \
+            --out build/c7-audit/reproducibility-report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('build/c7-audit/reproducibility-report.json').read_text())
+          assert r['seed_20261022_early_stop_sensitivity_confirmed']
+          assert r['frozen_train_val_counts']==[13571,2979]
+          assert not r['test_used'] and not r['phone_images_used']
+          for d in r['comparisons']:
+            assert d['shared_epochs_mean_abs_train_loss_diff']<0.0002
+          print('Frozen C5/C6 data/early-stop mismatch is independently diagnosed.')
+          PY
+
+      - name: Install CPU Torch and verify C7 private notebook / deterministic conditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m unittest discover -s tests -p test_c7_fixed25.py -v
+          python -m tools.build_kaggle_c7 --out build/kaggle_c7
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('build/kaggle_c7/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c7-gap2-fixed25-deterministic'
+          assert m['is_private'] and m['enable_gpu']
+          assert set(m['dataset_sources'])=={
+              'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline',
+              'tyhuanga/fpga-c3-locked-teacher'}
+          print('C7 trainer: fixed 25 epochs, strict CUDA deterministic, private input mounts.')
+          PY
+
+      - name: Install authenticated Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Verify exact teacher source and reject an active/successful C7 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          kaggle datasets files "$TEACHER_DATASET" >/tmp/c7-teacher-files
+          grep -q 'c3_teacher-best.pt' /tmp/c7-teacher-files
+          existing=$(kaggle kernels status "$EXPERIMENT" 2>&1 || true)
+          echo "$existing"
+          if echo "$existing" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED|COMPLETE)'; then
+            echo "::error::C7 already active/successful: no overwrites"
+            exit 1
+          fi
+
+      - name: Start one independent private C7 Kaggle GPU run
+        run: kaggle kernels push -p build/kaggle_c7 --accelerator NvidiaTeslaT4
+
+      - name: Confirm Kaggle private GPU and frozen teacher attachment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/c7-remote
+          kaggle kernels pull "$EXPERIMENT" -p build/c7-remote -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path('build/c7-remote/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c7-gap2-fixed25-deterministic'
+          assert m['enable_gpu'] and m['is_private']
+          assert set(m['dataset_sources'])=={
+            'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline',
+            'tyhuanga/fpga-c3-locked-teacher'}
+          print('Remote C7 notebook and private datasets verified')
+          PY
+
+      - name: Track C7 fixed25 GPU progression and retrieve available logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 440); do
+            status=$(kaggle kernels status "$EXPERIMENT" 2>&1)
+            echo "C7 status $i: $status"
+            if test $((i % 4)) -eq 0; then
+              kaggle kernels logs "$EXPERIMENT" >/tmp/c7-running-log.txt 2>&1 || true
+              if test -s /tmp/c7-running-log.txt; then
+                echo '--- Latest optional unbuffered Kaggle progress ---'
+                grep -E 'C7_PROGRESS|C6_PROGRESS|C7_REPRO_AUDIT_COMPLETE|Traceback|RuntimeError' /tmp/c7-running-log.txt | tail -8 || true
+              else
+                echo 'Kaggle API does not expose live notebook-cell stdout yet; final JSONL will be archived.'
+              fi
+            fi
+            if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then exit 0; fi
+            if echo "$status" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+              echo "::error::C7 ended without success; inspect Kaggle remote logs"
+              exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::C7 timed out; no automatic restart"
+          exit 1
+
+      - name: Download and validate four genuine 25-epoch C7 checkpoints and results
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p c7-archive
+          kaggle kernels output "$EXPERIMENT" -p c7-archive
+          python - <<'PY'
+          import json,shutil
+          from pathlib import Path
+          reports=list(Path('c7-archive').rglob('results.json'))
+          assert len(reports)==1,reports
+          folder=reports[0].parent
+          r=json.loads(reports[0].read_text())
+          assert r['experiment'].startswith('C7 reproducibility-controlled fixed25')
+          assert r['student_seeds']==[20261021,20261022]
+          assert r['train_val_count']==[13571,2979]
+          assert r['teacher_checkpoint_sha256']=='ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c'
+          assert r['all_four_runs_completed_25_epochs'] and r['deterministic_algorithms']
+          assert r['cublas_workspace_config']==':4096:8'
+          assert not r['test_evaluated'] and not r['phone_camera_evaluated']
+          assert not r['no_deployment'] is False and not r['int8_fpga_verified']
+          for mode in ('GAP2_CE_control','GAP2_C3_KD'):
+            for seed in (20261021,20261022):
+              out=folder/mode/('seed_'+str(seed))
+              assert (out/'best.pt').stat().st_size>100000
+              history=json.loads((out/'history.json').read_text())['epochs']
+              assert len(history)==25 and history[-1]['epoch']==25
+          progress=(folder/'live-progress.jsonl').read_text()
+          assert progress.count('"stage":"EPOCH_END"')==100
+          target=Path('c7-archive/reproducibility-report-original-C5-C6.json')
+          shutil.copyfile('build/c7-audit/reproducibility-report.json',target)
+          print('C7 REAL validation:',json.dumps({
+            key:{'mean_macro_f1':v['mean_macro_f1'],
+                 'mean_pair_errors':v['mean_pair_errors'],
+                 'per_seed':{
+                    s:{'f1':d['validation']['macro_f1'],
+                       'neutral':d['validation']['recall']['neutral'],
+                       'sad':d['validation']['recall']['sad'],
+                       'pair_errors':d['pair_errors']}
+                    for s,d in v['per_seed'].items()}
+                 } for key,v in r['variants'].items()},indent=2,ensure_ascii=False))
+          print('C7 robust improvement:',r['robust_improvement_gate'])
+          PY
+
+      - name: Archive full fixed25 C7 reproducibility evidence, not an FPGA bitstream
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C7-Fixed25-Deterministic-GAP2-CE-vs-KD
+          path: c7-archive/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Report Kaggle errors without automatically restarting
+        if: failure()
+        run: kaggle kernels logs "$EXPERIMENT" || true
