@@ -1,0 +1,95 @@
+name: Read-only C2 Kaggle GPU progress and archive finished validation results
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c2-readonly-recovery.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpga-c2-readonly-recovery
+  cancel-in-progress: false
+
+jobs:
+  watch-existing-c2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      EXPERIMENT: tyhuanga/fpga-c2-neutral-sad-experiments
+    steps:
+      - name: Install Kaggle for STATUS only (never push or rerun GPU)
+        run: python -m pip install kaggle
+      - name: Read actually saved C2 metadata and Kaggle status
+        shell: bash
+        run: |
+          mkdir -p c2-inspection
+          kaggle kernels pull "$EXPERIMENT" -p c2-inspection -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          info=json.loads(Path('c2-inspection/kernel-metadata.json').read_text())
+          print('Saved C2 GPU:',info.get('enable_gpu'))
+          print('Saved C2 private:',info.get('is_private'))
+          print('Actual C2 dataset_sources:',json.dumps(info.get('dataset_sources'),indent=2))
+          print('C2 slug:',info.get('id'))
+          assert info.get('id')=='tyhuanga/fpga-c2-neutral-sad-experiments'
+          assert info.get('enable_gpu') is True
+          PY
+          kaggle kernels status "$EXPERIMENT"
+      - name: Wait on EXACT existing C2 Kaggle run without starting new one
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 450); do
+            status=$(kaggle kernels status "$EXPERIMENT" 2>&1)
+            echo "C2 GPU status $n: $status"
+            if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then exit 0;fi
+            if echo "$status" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+              echo "::error::C2 remote GPU failed, read logs before any manual retry"
+              exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::Timed out checking remote C2; do not auto-restart model"
+          exit 1
+      - name: Download actual GPU outputs, check baseline and three student variants
+        shell: bash
+        run: |
+          mkdir -p c2-outputs
+          kaggle kernels output "$EXPERIMENT" -p c2-outputs
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=list(Path('c2-outputs').rglob('results.json'))
+          assert len(r)==1,r
+          summary=json.loads(r[0].read_text())
+          assert summary['architecture']=='TinyCNN-C 16/32/64/64 UNCHANGED'
+          assert summary['test_evaluated'] is False and summary['auto_relabels']==0
+          assert summary['required_second_seed']
+          assert set(summary['validation'])=={'baseline','A_hard_sampler','B_focal','C_distilled'}
+          for v in summary['variants']:
+            ck=r[0].parent/v/'best.pt'
+            assert ck.exists() and ck.stat().st_size>100000,ck
+          print('C2 real GPU training complete; validation metrics:',json.dumps({
+            k:{'macro_f1':round(v['macro_f1'],5),
+               'accuracy':round(v['accuracy'],5),
+               'neutral_recall':round(v['recall']['neutral'],5),
+               'sad_recall':round(v['recall']['sad'],5)}
+            for k,v in summary['validation'].items()},ensure_ascii=False,indent=2),flush=True)
+          print('VALIDATION-ONLY preliminary winner:',summary['winner_by_validation'])
+          PY
+      - name: Archive C2 experiment results without changing original C
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C2-Validation-Only-Hard-Focal-Distill
+          path: c2-outputs/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Emit diagnostic Kaggle failure logs only
+        if: failure()
+        run: kaggle kernels logs "$EXPERIMENT" || true
