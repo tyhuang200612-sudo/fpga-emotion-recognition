@@ -1,0 +1,179 @@
+name: Build C2-C distilled camera test APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/android-c2c-camera-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c2c-distilled-camera-debug-apk
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout Android Camera-C baseline source
+        uses: actions/checkout@v4
+
+      - name: Download archived genuine C2-C trained checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: TinyCNN-C2-FrozenStructure-Three-Validation-Experiments
+          run-id: 38995638992
+          github-token: ${{ github.token }}
+          path: trained-c2
+
+      - name: Set Python 3.11 for ONNX conversion
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU PyTorch and ONNX test dependencies
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy onnx onnxruntime
+
+      - name: Verify C2-C distillation origin and export genuine FP32 weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import torch
+          p=list(Path('trained-c2').rglob('results.json'))
+          assert len(p)==1, f'Expected a unique Kaggle C2 result, got {p}'
+          root=p[0].parent
+          report=json.loads(p[0].read_text())
+          assert report['architecture']=='TinyCNN-C 16/32/64/64 UNCHANGED'
+          assert report['test_evaluated'] is False
+          assert report['required_second_seed'] is True
+          assert report['quality_policy']=='fer2013-three-class-safe-pixel-dedup-v1'
+          assert set(report['validation'])=={'baseline','A_hard_sampler','B_focal','C_distilled'}
+          assert (root/'teacher'/'best.pt').is_file(), 'Teacher checkpoint missing'
+          ck=root/'C_distilled'/'best.pt'
+          assert ck.is_file() and ck.stat().st_size>100000
+          state=torch.load(ck,map_location='cpu',weights_only=True)
+          assert state['variant']=='C_distilled'
+          assert state['seed']==2026
+          assert state['class_names']==['neutral','happy','sad']
+          assert state['input_shape']==[1,48,48]
+          assert state['epoch']==12
+          assert abs(state['val_metrics']['macro_f1']-report['validation']['C_distilled']['macro_f1'])<1e-8
+          from src.model_c import TinyCNNC
+          model=TinyCNNC()
+          model.load_state_dict(state['state_dict'],strict=True)
+          (Path('/tmp/c2c-checkpoint.txt')).write_text(str(ck))
+          print('Verified C2-C teacher-distilled student best epoch:',state['epoch'])
+          print('Only validation metrics are available; this is an experimental phone build.')
+          PY
+          python -m tools.export_onnx_c --checkpoint "$(cat /tmp/c2c-checkpoint.txt)" --out-dir android-camera-c/app/src/main/assets
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('android-camera-c/app/src/main/assets/model-info.json')
+          d=json.loads(p.read_text(encoding='utf-8'))
+          assert d['onnx_torch_max_abs_diff']<0.0001, d
+          assert d['selected_epoch']==12
+          assert d['class_names']==['neutral','happy','sad']
+          d['model']='TinyCNN-C2-C Distilled 16/32/64/64'
+          d['variant']='C_distilled'
+          d['training_run_id']=38995638992
+          d['test_evaluated']=False
+          d['fp32_android_camera_experiment']=True
+          d['replaces_original_C']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          PY
+
+      - name: Give distilled test build separate app identity and clear UI
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          gradle=Path('android-camera-c/app/build.gradle')
+          s=gradle.read_text()
+          a="applicationId 'com.tyhuanga.fpga.camerac'"
+          assert s.count(a)==1
+          s=s.replace(a,"applicationId 'com.tyhuanga.fpga.camerac2c'")
+          assert s.count("versionName '1.0.0-C-2026'")==1
+          s=s.replace("versionName '1.0.0-C-2026'","versionName '1.0.0-C2C-Distilled-Test'")
+          gradle.write_text(s)
+          manifest=Path('android-camera-c/app/src/main/AndroidManifest.xml')
+          s=manifest.read_text()
+          assert 'android:label="FPGA C 实时表情识别"' in s
+          manifest.write_text(s.replace('android:label="FPGA C 实时表情识别"','android:label="FPGA C2-C 蒸馏版测试"'))
+          java=Path('android-camera-c/app/src/main/java/com/tyhuanga/fpga/camerac/MainActivity.java')
+          s=java.read_text()
+          pairs={
+              'TinyCNN-C · 实时表情识别':'TinyCNN-C2-C · 实时表情识别',
+              'Seed 2026 · 前置摄像头 · 完全在手机本地识别':'C2-C 知识蒸馏版 · 前置摄像头 · 完全本地识别',
+              '正在载入 C 模型…':'正在载入 C2-C 蒸馏版模型…',
+              'tinycnn-c-seed2026.onnx':'tinycnn-c2c-distilled-seed2026.onnx',
+              'C-2026 模型已加载 · 正在检测人脸':'C2-C 蒸馏模型已加载 · 正在检测人脸',
+              '无法加载真实 C 模型：':'无法加载 C2-C 蒸馏模型：',
+              '本测试使用真实 C 模型的 FP32 推理':'本测试使用真实 C2-C 蒸馏学生模型的 FP32 推理',
+          }
+          for old,new in pairs.items():
+              assert s.count(old)==1,(old,s.count(old))
+              s=s.replace(old,new)
+          java.write_text(s)
+          PY
+
+      - name: Prepare Java 17 and Android SDK 35
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Ensure Android SDK platform 35
+        run: |
+          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build independent debug installable APK
+        working-directory: android-camera-c
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+
+      - name: Verify exact distilled ONNX model is embedded
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,hashlib,shutil
+          from zipfile import ZipFile
+          from pathlib import Path
+          src=Path('android-camera-c/app/build/outputs/apk/debug/app-debug.apk')
+          assert src.is_file() and src.stat().st_size>100000
+          with ZipFile(src) as z:
+              assert 'assets/model.onnx' in z.namelist()
+              assert 'assets/model-info.json' in z.namelist()
+              info=json.loads(z.read('assets/model-info.json'))
+              assert info['model']=='TinyCNN-C2-C Distilled 16/32/64/64'
+              assert info['variant']=='C_distilled'
+              assert info['selected_epoch']==12
+              assert info['onnx_torch_max_abs_diff']<1e-4
+              assert z.getinfo('assets/model.onnx').file_size>100000
+          dist=Path('dist');dist.mkdir(exist_ok=True)
+          dst=dist/'TinyCNN-C2-C-Distilled-Camera-Android-arm64-Test.apk'
+          shutil.copyfile(src,dst)
+          print('C2-C genuine Android APK:',dst,'size:',dst.stat().st_size,'sha256:',hashlib.sha256(dst.read_bytes()).hexdigest())
+          PY
+
+      - name: Publish user-installable phone test APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C2-C-Distilled-Camera-Android-arm64-Test
+          path: dist/TinyCNN-C2-C-Distilled-Camera-Android-arm64-Test.apk
+          if-no-files-found: error
+          retention-days: 30
