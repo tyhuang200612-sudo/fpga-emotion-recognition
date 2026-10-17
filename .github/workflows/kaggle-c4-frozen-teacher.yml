@@ -107,15 +107,48 @@ jobs:
           else
             kaggle datasets create -p build/private-c3-teacher
           fi
+          # Kaggle dataset uploads index asynchronously. Wait until the
+          # actual private checkpoint file can be attached to a new kernel.
+          ready=0
+          for n in $(seq 1 45); do
+            if kaggle datasets files "$TEACHER_DATASET" >/tmp/c3_teacher_files.txt 2>&1; then
+              if grep -q 'c3_teacher-best.pt' /tmp/c3_teacher_files.txt; then
+                cat /tmp/c3_teacher_files.txt
+                ready=1
+                break
+              fi
+            fi
+            echo "Waiting for private Kaggle dataset indexing, check $n"
+            sleep 15
+          done
+          if test "$ready" -ne 1; then
+             echo "::error::Teacher private dataset cannot be attached; will not launch GPU"
+             exit 1
+          fi
 
       - name: Verify no already-running C4 notebook will be overwritten
         shell: bash
         run: |
           set -euo pipefail
+          # The prior C4 attempt was missing the teacher attachment. Wait until
+          # it has stopped before attempting a corrected, distinct run.
+          for attempt in $(seq 1 48); do
+            status=$(kaggle kernels status "$EXPERIMENT" 2>&1 || true)
+            echo "Existing C4 status $attempt: $status"
+            if echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
+              sleep 20
+              continue
+            fi
+            if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+              echo "::error::C4 has already completed; inspect before any overwrite"
+              exit 1
+            fi
+            break
+          done
           status=$(kaggle kernels status "$EXPERIMENT" 2>&1 || true)
-          echo "$status"
-          if echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
-            echo "::error::C4 already in progress; no duplicated GPU run"; exit 1
+          if echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED|COMPLETE)'; then
+            echo "::error::Active or successful C4 run exists; refusing overwrite"
+            exit 1
           fi
 
       - name: Submit C4 private Kaggle T4 GPU run
