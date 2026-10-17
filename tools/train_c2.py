@@ -38,7 +38,7 @@ def event(name,**kw):
     OUT.mkdir(parents=True,exist_ok=True)
     data={"event":name,"epoch_time":time.time(),**kw}
     print("C2_EVENT",json.dumps(data,ensure_ascii=False),flush=True)
-    with (OUT/"progress.jsonl").open("a",encoding="utf-8") as f:f.write(json.dumps(data)+"\\n")
+    with (OUT/"progress.jsonl").open("a",encoding="utf-8") as f:f.write(json.dumps(data)+"\n")
 
 def load_rows(file):
     with file.open(newline="",encoding="utf-8") as f:r=list(csv.DictReader(f))
@@ -263,7 +263,7 @@ def run():
             "quality_policy":meta["policy"],
             "test_manifest_sha256":meta["heldout_test_sha256"],
             "notes":"Only val chose preliminary candidate. Must replicate another seed before FINAL test, not a deploy release."}
-    (OUT/"results.json").write_text(json.dumps(result,indent=2,ensure_ascii=False)+"\\n")
+    (OUT/"results.json").write_text(json.dumps(result,indent=2,ensure_ascii=False)+"\n")
     event("COMPLETE",winner=chosen,validation_macro_f1=scores[chosen]["macro_f1"])
     return result
 
