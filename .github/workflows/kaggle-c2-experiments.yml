@@ -1,4 +1,5 @@
 name: TinyCNN-C2 neutral/sad A/B/distillation GPU comparisons
+# C2 GPU only starts after the validation-only Python preflight succeeds.
 
 on:
   workflow_dispatch:
