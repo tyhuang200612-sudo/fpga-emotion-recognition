@@ -1,0 +1,125 @@
+name: "C8 staged logging GPU launch (safe: wait for old C7)"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c8-staged-launch.yml'
+  schedule:
+    - cron: '11 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpga-c8-one-private-kaggle-submit
+  cancel-in-progress: false
+
+jobs:
+  prepare-and-launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      OLD_KERNEL: tyhuanga/fpga-c7-gap2-fixed25-deterministic
+      NEW_KERNEL: tyhuanga/fpga-c8-stepwise-log-epochs
+    steps:
+      - name: Checkout audited C source and staged C8
+        uses: actions/checkout@v4
+
+      - name: Python3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install authenticated Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Safety gate - no second GPU while C7 is active
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          old=$(kaggle kernels status "$OLD_KERNEL" 2>&1 || true)
+          echo "Prior C7: $old"
+          if echo "$old" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED)'; then
+            echo "safe_to_launch=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Old C7 is still active. C8 GPU launch deferred, no second GPU started."
+            echo "### Waiting safely" >>"$GITHUB_STEP_SUMMARY"
+            echo "Old C7 still RUNNING; no duplicate GPU run was started. This short workflow will check again at the next scheduled trigger." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Refuse guessing if Kaggle status is unexpectedly absent/unknown.
+          if ! echo "$old" | grep -Eq 'KernelWorkerStatus\.(COMPLETE|ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::Unknown old C7 status; refuse overlapping GPU."
+            exit 1
+          fi
+          new=$(kaggle kernels status "$NEW_KERNEL" 2>&1 || true)
+          echo "New C8: $new"
+          if echo "$new" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED|COMPLETE)'; then
+            echo "safe_to_launch=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::C8 already started or completed; do not overwrite or duplicate."
+            echo "### Already launched" >>"$GITHUB_STEP_SUMMARY"
+            echo "C8 already has a running or complete Kaggle job. No new GPU submitted." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if echo "$new" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::Previous C8 failed/was stopped. Manual diagnosis required; no auto-restart."
+            exit 1
+          fi
+          if ! echo "$new" | grep -Eqi 'not found|404|does not exist|Kernel not found|No kernels'; then
+            echo "::error::Unknown new kernel status. Refusing unsafe overwrite."
+            exit 1
+          fi
+          echo "safe_to_launch=true" >>"$GITHUB_OUTPUT"
+          echo "### C8 ready for private GPU submission" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Install CPU PyTorch and prove 20 separately visible stage cells
+        if: steps.gate.outputs.safe_to_launch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m unittest discover -s tests -p test_c8_stepwise.py -v
+          python -m tools.build_kaggle_c8 --out build/kaggle_c8
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out=Path('build/kaggle_c8')
+          meta=json.loads((out/'kernel-metadata.json').read_text())
+          assert meta['id']=='tyhuanga/fpga-c8-stepwise-log-epochs'
+          assert meta['is_private'] and meta['enable_gpu']
+          assert set(meta['dataset_sources'])=={
+            'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline',
+            'tyhuanga/fpga-c3-locked-teacher'}
+          notebook=json.loads((out/meta['code_file']).read_text())
+          stages=sum('c8_epochs(5)' in ''.join(c['source']) for c in notebook['cells'])
+          assert stages==20 and len(notebook['cells'])==37
+          print('C8 private 20-cell staged 100 epoch experiment preflight successful')
+          PY
+
+      - name: Confirm frozen private C3 teacher present
+        if: steps.gate.outputs.safe_to_launch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle datasets files tyhuanga/fpga-c3-locked-teacher >/tmp/teacher-files.txt
+          grep -q 'c3_teacher-best.pt' /tmp/teacher-files.txt
+
+      - name: Launch C8 one time; no long-running GitHub monitoring
+        if: steps.gate.outputs.safe_to_launch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p build/kaggle_c8 --accelerator NvidiaTeslaT4
+          state=$(kaggle kernels status "$NEW_KERNEL" 2>&1 || true)
+          echo "C8 post-push status: $state"
+          echo "### C8 submitted to Kaggle (NOT YET trained)" >>"$GITHUB_STEP_SUMMARY"
+          echo "Notebook: https://www.kaggle.com/code/tyhuanga/fpga-c8-stepwise-log-epochs" >>"$GITHUB_STEP_SUMMARY"
+          echo "37 cells total including 20 five-Epoch cells. Logs might only be externally downloadable after Kaggle completion." >>"$GITHUB_STEP_SUMMARY"
+          if echo "$state" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED)'; then
+            echo "::error::Immediate remote GPU error"
+            exit 1
+          fi
