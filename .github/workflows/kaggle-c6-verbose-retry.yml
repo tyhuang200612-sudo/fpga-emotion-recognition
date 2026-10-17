@@ -1,4 +1,4 @@
-name: C6 verbose retry: C5-GAP2 CE vs frozen C3 distillation
+name: "C6 verbose retry: C5-GAP2 CE vs frozen C3 distillation"
 
 on:
   push:
@@ -86,7 +86,7 @@ jobs:
           for n in $(seq 1 12); do
             state=$(kaggle kernels status "$old" 2>&1 || true)
             echo "Original C6 check $n: $state"
-            if echo "$state" | grep -Eq 'KernelWorkerStatus\\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
+            if echo "$state" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
               sleep 15
               continue
             fi
