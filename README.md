@@ -54,3 +54,10 @@ docs/actions-and-colab.md       # Actions 与 Colab 能力边界
 ## FER2013 公开数据集（替代 3.94GB 上传用于第一轮基线）
 
 已加入 [Kaggle 官方 API 自动审计说明](docs/fer2013-kaggle.md)。通过 GitHub Actions 手动提交 **CPU 数据审计任务** 到 Kaggle，筛选 neutral、happy、sad；确认数据质量后才安排正式 GPU 训练。不会自动使用免费 GPU 配额。
+
+## C2 / C3 / C4 项目交接与训练复现
+
+- [完整交接索引（模型权重校验、历史运行、私有云端备份、恢复方法）](docs/experiment-handoff-index.md)
+- 已归档 C3 教师、学生及验证结果：GitHub Actions #38999204120；C3 教师现已复制至 Kaggle 私有数据集 `tyhuanga/fpga-c3-locked-teacher`。
+- C4 继续保持原部署 TinyCNNC 16/32/64/64，冻结教师，双随机种子验证，严格不使用冻结 TEST 集挑选学生。
+- 当前手机 APP 是 FP32 视觉验证，不代表 FPGA INT8 已完成部署；真实摄像头准确率须另行测试。
