@@ -1,0 +1,59 @@
+name: "C7 evidence check: direct Kaggle status and logs"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c7-direct-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      TARGET_KERNEL: tyhuanga/fpga-c7-gap2-fixed25-deterministic
+    steps:
+      - name: Python3
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Directly inspect Kaggle kernel state and training logs WITHOUT launching GPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -z "$KAGGLE_API_TOKEN"; then
+            echo "::error::Kaggle authentication missing"
+            exit 1
+          fi
+          echo "=== DIRECT Kaggle status, not GitHub monitor status ==="
+          kaggle kernels status "$TARGET_KERNEL" 2>&1 | tee /tmp/c7-state.txt
+          echo "=== DIRECT Kaggle log query ==="
+          kaggle kernels logs "$TARGET_KERNEL" > /tmp/c7-remote-log.txt 2>&1 || true
+          echo "Kaggle remote log byte count: $(wc -c </tmp/c7-remote-log.txt)"
+          if test -s /tmp/c7-remote-log.txt; then
+            echo "Remote log last 50 lines:"
+            tail -50 /tmp/c7-remote-log.txt
+            echo "Model epoch evidence, latest 20:"
+            grep -E 'C6_PROGRESS|C7_REPRO_AUDIT_COMPLETE|C7_DETERMINISM_CONFIGURED|C6_EPOCH|EPOCH_END|VALIDATION_START|Traceback|RuntimeError|CUDA' /tmp/c7-remote-log.txt | tail -20 || true
+          fi
+          if grep -Eq 'C6_PROGRESS.*(EPOCH_END|BATCH)' /tmp/c7-remote-log.txt; then
+            echo "VERDICT: PROVEN TRAINING STEPS - observed actual C7 batch/epoch evidence."
+          elif grep -q 'KernelWorkerStatus.COMPLETE' /tmp/c7-state.txt; then
+            echo "VERDICT: KAGGLE JOB COMPLETE, but need final artifact and logs to prove model result."
+          elif grep -q 'KernelWorkerStatus.RUNNING' /tmp/c7-state.txt; then
+            echo "VERDICT: ONLY KAGGLE KERNEL RUNNING; actual training batches/epochs NOT PROVEN. Live logs unavailable or empty."
+          elif grep -q 'KernelWorkerStatus.ERROR' /tmp/c7-state.txt; then
+            echo "VERDICT: KAGGLE JOB ERROR; training failed."
+          else
+            echo "VERDICT: no conclusive epoch evidence; inspect state above."
+          fi
+          echo "=== Read-only check finished; no GPU launched/restarted/modified ==="
