@@ -1,12 +1,8 @@
 name: "C8 staged logging GPU launch (safe: wait for old C7)"
 
+# C8 v1 failed on deterministic CUDA adaptive_avg_pool2d backward.
+# Keep for read-only forensic review; do not auto-restart failing kernel.
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/kaggle-c8-staged-launch.yml'
-  schedule:
-    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
