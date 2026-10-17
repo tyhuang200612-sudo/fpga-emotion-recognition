@@ -1,0 +1,65 @@
+name: "C7 read-only runtime triage: status logs partial files"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c7-runtime-triage.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      TARGET: tyhuanga/fpga-c7-gap2-fixed25-deterministic
+    steps:
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Read only Kaggle status, available remote files and bounded output
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -z "$KAGGLE_API_TOKEN"; then echo "::error::Kaggle secret missing"; exit 1; fi
+          echo "====== TRIAGE START ======"
+          date -u -Iseconds
+          echo "===== direct kernel status ====="
+          timeout 25 kaggle kernels status "$TARGET" 2>&1 | tee /tmp/state.txt
+          echo "===== live kernel logs ====="
+          timeout 25 kaggle kernels logs "$TARGET" >/tmp/live.log 2>&1 || true
+          echo "Log file bytes: $(wc -c </tmp/live.log)"
+          if test -s /tmp/live.log; then tail -30 /tmp/live.log; fi
+          echo "===== Kaggle published output files listing (during execution) ====="
+          timeout 35 kaggle kernels files "$TARGET" --page-size 40 > /tmp/files.txt 2>&1 || true
+          cat /tmp/files.txt | head -50
+          echo "===== Partial output progress-only test ====="
+          mkdir -p /tmp/kaggle-progress-only
+          timeout 40 kaggle kernels output "$TARGET" \
+              --file-pattern '.*(live-progress\.jsonl|progress\.jsonl|results\.json)$' \
+              -p /tmp/kaggle-progress-only > /tmp/output-result.txt 2>&1 || true
+          echo "Filtered output retrieval response:"
+          tail -24 /tmp/output-result.txt
+          echo "Downloaded files (if any):"
+          find /tmp/kaggle-progress-only -maxdepth 5 -type f -printf '%p %s bytes\n' | head -25
+          echo "===== Any actual training event evidence ====="
+          find /tmp/kaggle-progress-only -type f \( -name '*progress*.jsonl' -o -name 'results.json' \) -print0 | \
+            xargs -0 -r grep -E 'EPOCH_END|VARIANT_END|C7_REPRO_AUDIT_COMPLETE|COMPLETE' | tail -15 || true
+          echo "===== SUMMARY ====="
+          if grep -q 'KernelWorkerStatus.COMPLETE' /tmp/state.txt; then
+            echo "TRIAGE_STATUS=COMPLETE; investigate result artifact"
+          elif grep -q 'KernelWorkerStatus.RUNNING' /tmp/state.txt; then
+            echo "TRIAGE_STATUS=RUNNING; processing health unverified"
+          else
+            echo "TRIAGE_STATUS=OTHER"
+          fi
+          echo "TRIAGE_COMPLETE=READ_ONLY; NO GPU push, restart or stop."
