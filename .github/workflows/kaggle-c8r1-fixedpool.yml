@@ -63,12 +63,12 @@ jobs:
           fi
           prior=$(kaggle kernels status "$PRIOR_C8_KERNEL" 2>&1 || true)
           echo "Failed C8 (must have ended before C8R1): $prior"
-          if echo "$prior" | grep -Eq 'KernelWorkerStatus\\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED)'; then
+          if echo "$prior" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED)'; then
             echo "::notice::Original C8 remains active; no C8R1 GPU submitted."
             echo "safe_to_launch=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! echo "$prior" | grep -Eq 'KernelWorkerStatus\\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED|COMPLETE)'; then
+          if ! echo "$prior" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED|COMPLETE)'; then
             echo "::error::Could not verify original C8 stopped. Abort duplicate training."
             exit 1
           fi
