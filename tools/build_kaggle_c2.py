@@ -36,6 +36,7 @@ def build_c2(repo_root:Path,out_dir:Path):
     src=src.replace("from __future__ import annotations\n","")
     src=src.replace("from src.model_c import TinyCNNC, CLASS_NAMES_C\n","")
     src=src.replace("    from tools.prepare_fer2013 import find_dataset_root\n","")
+    src=src.rsplit('if __name__=="__main__":',1)[0]
     if "from src.model_c import" in src or "from tools.prepare_fer2013 import" in src:
         raise RuntimeError("Notebook must have no local filesystem dependency")
     if "TEST" not in src or "test_evaluated" not in src:
