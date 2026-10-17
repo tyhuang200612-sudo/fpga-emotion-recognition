@@ -1,4 +1,5 @@
 name: TinyCNN-C3 camera augmentation and pretrained teacher (validation only)
+# C3 rerun after fixing the builder's eager-execution guard; GPU only after preflight.
 
 on:
   push:
