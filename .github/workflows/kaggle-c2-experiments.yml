@@ -1,0 +1,169 @@
+name: TinyCNN-C2 neutral/sad A/B/distillation GPU comparisons
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c2-experiments.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c2-neutral-sad-experiments
+  cancel-in-progress: false
+
+jobs:
+  c2-experiments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      BATCH_UNBUFFERED: '1'
+      EXPERIMENT: tyhuanga/fpga-c2-neutral-sad-experiments
+      BASELINE_DATASET: tyhuanga/fpga-c2026-locked-baseline
+    steps:
+      - name: Checkout C2 experiment, private data safeguards, and test script
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download real C-2026 weight and untouched quality-v1 manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: tinycnn-C-16-32-64-64-quality-v1-two-seeds
+          path: training-c
+          run-id: 38943721697
+          github-token: ${{ github.token }}
+      - name: Install Kaggle CLI and notebook metadata/test dependencies
+        run: python -m pip install kaggle Pillow
+      - name: Verify notebook safety preflight before using any GPU
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p test_c2_builder.py -v
+          python -m unittest discover -s tests -p test_kaggle_c_quality.py -v
+      - name: Prepare private C2026 weight dataset without copying heldout test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          mkdir -p build/c2-baseline
+          root=training-c/fpga-fer2013-c-quality-v1
+          cp "$root/seed_2026/best.pt" build/c2-baseline/c2026-baseline.pt
+          cp "$root/quality-v1/train.csv" build/c2-baseline/train.csv
+          cp "$root/quality-v1/val.csv" build/c2-baseline/val.csv
+          cp "$root/quality-v1/quality-report.json" build/c2-baseline/quality-report.json
+          python - <<'PY'
+          import csv,hashlib,json
+          from pathlib import Path
+          path=Path('build/c2-baseline')
+          q=json.loads((path/'quality-report.json').read_text())
+          assert q['policy']=='fer2013-three-class-safe-pixel-dedup-v1'
+          assert q['cleaned_counts']=={'train':13571,'val':2979,'test':4251}
+          assert len(list(csv.DictReader((path/'train.csv').open())))==13571
+          assert len(list(csv.DictReader((path/'val.csv').open())))==2979
+          assert (path/'c2026-baseline.pt').stat().st_size>100000
+          assert not (path/'test.csv').exists()
+          md={'id':'tyhuanga/fpga-c2026-locked-baseline',
+              'title':'Private frozen C2026 checkpoint and train-val manifests',
+              'is_private':True,
+              'licenses':[{'name':'other'}]}
+          (path/'dataset-metadata.json').write_text(json.dumps(md,indent=2))
+          print('PRIVATE C2 baseline dataset verified. Test CSV and test photos NOT uploaded.',flush=True)
+          PY
+      - name: Push private frozen baseline dataset to owner Kaggle account
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle datasets create -p build/c2-baseline
+      - name: Generate isolated three-experiment C2 Kaggle notebook
+        shell: bash
+        run: |
+          python -m tools.build_kaggle_c2 --out build/kaggle_c2
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('build/kaggle_c2')
+          metadata=json.loads((root/'kernel-metadata.json').read_text())
+          assert metadata['id']=='tyhuanga/fpga-c2-neutral-sad-experiments'
+          assert metadata['enable_gpu'] and metadata['is_private']
+          assert metadata['dataset_sources']==['msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline']
+          print('C2 A/B/C identical deployed TinyCNN-C topology and test-free VAL gate.',flush=True)
+          PY
+      - name: Prevent duplicate C2 GPU runs
+        shell: bash
+        run: |
+          status=$(kaggle kernels status "$EXPERIMENT" 2>&1) || true
+          echo "Current C2 status: $status"
+          if echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
+            echo "::error::Another C2 GPU run already active; not overwriting"; exit 1
+          fi
+      - name: Start real C2 three-experiment Kaggle T4 training
+        run: kaggle kernels push -p build/kaggle_c2 --accelerator NvidiaTeslaT4
+      - name: Verify saved GPU / private owner data attachments
+        shell: bash
+        run: |
+          mkdir -p build/c2-remote
+          kaggle kernels pull "$EXPERIMENT" -p build/c2-remote -m
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path('build/c2-remote/kernel-metadata.json').read_text())
+          assert m['enable_gpu'] and m['dataset_sources']==['msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline']
+          assert m['is_private']
+          print('Kaggle C2 GPU + private data successfully attached',flush=True)
+          PY
+      - name: Wait for C2 validation-only experiments
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "C2 notebook: https://www.kaggle.com/code/$EXPERIMENT"
+          for i in $(seq 1 410); do
+            info=$(kaggle kernels status "$EXPERIMENT" 2>&1)
+            echo "C2 status $i: $info"
+            if echo "$info" | grep -q 'KernelWorkerStatus.COMPLETE'; then exit 0; fi
+            if echo "$info" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+              echo "::error::Actual C2 GPU notebook failed"
+              exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::C2 timeout; check Kaggle without rerunning";exit 1
+      - name: Download verified real C2 checkpoints and validation reports
+        shell: bash
+        run: |
+          mkdir -p c2-outputs
+          kaggle kernels output "$EXPERIMENT" -p c2-outputs
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          reports=list(Path('c2-outputs').rglob('results.json'))
+          assert len(reports)==1,reports
+          r=json.loads(reports[0].read_text())
+          assert r['architecture']=='TinyCNN-C 16/32/64/64 UNCHANGED'
+          assert r['test_evaluated'] is False and r['auto_relabels']==0
+          assert len(r['variants'])==3
+          assert r['required_second_seed'] is True
+          assert set(r['validation'])=={'baseline','A_hard_sampler','B_focal','C_distilled'}
+          for name in r['variants']:
+              ck=reports[0].parent/name/'best.pt'
+              assert ck.exists() and ck.stat().st_size>100000,ck
+          print('C2 actual validation comparison:',json.dumps({
+              name:{'macro_f1':v['macro_f1'],'neutral':v['recall']['neutral'],
+                    'sad':v['recall']['sad']} for name,v in r['validation'].items()},indent=2),flush=True)
+          print('PRELIMINARY WINNER (NO TEST):',r['winner_by_validation'],flush=True)
+          PY
+      - name: Archive genuinely trained C2 student checkpoints and teacher
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C2-FrozenStructure-Three-Validation-Experiments
+          path: c2-outputs/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Show actual Kaggle failure logs if experiment fails
+        if: failure()
+        shell: bash
+        run: kaggle kernels logs "$EXPERIMENT" || true
