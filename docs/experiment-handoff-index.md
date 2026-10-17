@@ -95,3 +95,12 @@
 - GPU私有数据集包含C3冻结ImageNet预训练教师，训练脚本将核对教师SHA256、验证集分数与样本数量。原独立TEST不参与模型选择，不使用用户手机诊断原图，不自动改表情标签。
 - 预期工件 `TinyCNN-C6-GAP2-CE-vs-C3Teacher-KD-TwoSeeds-ValidationOnly`，**此条记录写入时训练仍在进行，尚无可信最终成绩**；收到完整归档后必须检查4份最佳模型、分种子精度、双向混淆数、门槛、SHA256、有效期并加入交接包。
 - 禁止C6训练后直接替换Android APK/FPGA权重；尚未量化或完成安路RTL上板验证。
+
+
+## C6 手动取消后的日志增强重训（2026-10-17）
+- 原始 C6 private Kaggle `tyhuanga/fpga-c6-gap2-frozen-c3-kd` 由用户主动结束，原始 GitHub Actions [#39006028260](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39006028260) 最终 **failure**。原运行未归档四个最佳权重，**不得声称其验证成绩**。
+- 新的独立 Kaggle Notebook：[`tyhuanga/fpga-c6-gap2-kd-verbose-retry1`](https://www.kaggle.com/code/tyhuanga/fpga-c6-gap2-kd-verbose-retry1)。自动训练与监控：[GitHub Actions #39008401226](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39008401226)。新内核独立，不覆盖已停止的旧核。
+- 新增 `tools/build_kaggle_c6_verbose.py`、`tests/test_c6_verbose.py`、`.github/workflows/kaggle-c6-verbose-retry.yml`。复用 `tools/train_c6_spatial_kd.py` 且加入 `c6_progress()`：保存到私有 Kaggle `/kaggle/working/fpga-fer2013-c6-gap2-kd-verbose-retry1/live-progress.jsonl`，同时 `print(...,flush=True)`。
+- 日志节点包括 START、数据集扫描、冻结教师校验、EPOCH_START、每25批一次BATCH、VALIDATION_START、EPOCH_END（包含train loss、accuracy、macro F1、中性/悲伤召回率、完整混淆矩阵）、VARIANT_END、COMPLETE，并在异常时打印 traceback。
+- 工作流每40秒读取 Kaggle 任务状态，每4轮尝试通过 `kaggle kernels logs` 提取 C6_PROGRESS；**Kaggle在运行中的长代码单元可能推迟向网页/API提供stdout，不保证实时显示**。任务完成后 `live-progress.jsonl`、`progress.jsonl`、`history.json`、`results.json` 与4个 `best.pt` 才是可复核证据。新run启动检查全部通过并已推送GPU Notebook，但记录创建时 **GPU尚未返回正式C6质量报告**。
+- 保持原有独立TEST及手机人脸诊断样本隔离，不自动改标签、不部署Android和安路FPGA、不声称C6质量提升。
