@@ -28,6 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$KAGGLE_API_TOKEN"
+          echo "C8 follow-up status and epoch evidence recheck:"
           echo "C8 Kaggle direct status:"
           kaggle kernels status "$TARGET" | tee /tmp/c8-state.txt
           echo "C8 remote stdout (might be buffered while running):"
