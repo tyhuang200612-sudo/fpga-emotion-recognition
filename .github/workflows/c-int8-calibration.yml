@@ -1,0 +1,139 @@
+name: TinyCNN-C real INT8 PTQ and neutral-sad quality analysis (CPU)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/c-int8-calibration.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tinycnn-c-int8-quality-cpu
+  cancel-in-progress: false
+
+jobs:
+  int8-and-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout integer reference and review scripts
+        uses: actions/checkout@v4
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download genuine completed C 2026 checkpoint and audited manifests
+        uses: actions/download-artifact@v4
+        with:
+          name: tinycnn-C-16-32-64-64-quality-v1-two-seeds
+          path: trained-c
+          run-id: 38943721697
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install exact-integer PTQ and private dataset audit requirements
+        shell: bash
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy Pillow kaggle
+      - name: Verify integer-conv implementation against separate naive reference
+        run: |
+          python -m unittest discover -s tests -p test_quantize_c_int8.py -v
+          python -m unittest discover -s tests -p test_model_c.py -v
+      - name: Fetch FER2013 public images without exposing credentials
+        shell: bash
+        run: |
+          test -n "$KAGGLE_API_TOKEN"
+          mkdir -p /tmp/c-fer2013
+          kaggle datasets download -d msambare/fer2013 -p /tmp/c-fer2013
+          unzip -q /tmp/c-fer2013/fer2013.zip -d /tmp/c-fer2013
+          python - <<'PY'
+          from pathlib import Path
+          from tools.prepare_fer2013 import find_dataset_root
+          r=find_dataset_root(Path('/tmp/c-fer2013'))
+          Path('/tmp/c-dataset-root.txt').write_text(str(r))
+          print('Verified FER2013 data root with train/test neutral/happy/sad folders',flush=True)
+          PY
+      - name: Reject wrong checkpoint or missing optimized training-only manifests
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import torch,json
+          base=Path('trained-c/fpga-fer2013-c-quality-v1')
+          ck=base/'seed_2026/best.pt'
+          assert ck.is_file()
+          d=torch.load(ck,map_location='cpu',weights_only=False)
+          assert d['seed']==2026 and list(d['class_names'])==['neutral','happy','sad']
+          for x in ('train','val'):
+              assert (base/'quality-v1'/f'{x}.csv').is_file()
+          report=json.loads((base/'quality-v1/quality-report.json').read_text())
+          assert report['ferplus_labels_applied'] is False
+          print('C-2026 exact checkpoint and optimized train/val accepted',flush=True)
+          PY
+      - name: Run real TRAIN calibration and exact integer VALIDATION comparison
+        shell: bash
+        run: |
+          root="$(cat /tmp/c-dataset-root.txt)"
+          python -m tools.quantize_c_int8 \
+            --checkpoint trained-c/fpga-fer2013-c-quality-v1/seed_2026/best.pt \
+            --dataset-root "$root" \
+            --manifests trained-c/fpga-fer2013-c-quality-v1/quality-v1 \
+            --cal-count 256 --val-count 128 --golden-count 12 \
+            --out build/c2026-ptq-int8
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path('build/c2026-ptq-int8')
+          d=json.loads((p/'quant_report.json').read_text())
+          assert d['test_used'] is False and d['bitstream_ready'] is False
+          assert len(d['layers'])==5
+          assert sum(x['weights'] for x in d['layers'])==60240
+          for i in range(1,6):
+              assert (p/f'weight_layer{i:02d}.mem').is_file()
+              assert (p/f'bias_layer{i:02d}_int32.bin').is_file()
+              assert (p/f'mult_layer{i:02d}_q24.bin').is_file()
+          assert (p/'golden_integer_layers.npz').is_file()
+          print('Validated real INT8 export, benchmark and golden layer tensors',flush=True)
+          PY
+      - name: Identify neutral vs sad hard examples on TRAIN and VALIDATION
+        shell: bash
+        run: |
+          root="$(cat /tmp/c-dataset-root.txt)"
+          python -m tools.review_c_confusions \
+            --checkpoint trained-c/fpga-fer2013-c-quality-v1/seed_2026/best.pt \
+            --dataset-root "$root" \
+            --manifests trained-c/fpga-fer2013-c-quality-v1/quality-v1 \
+            --train-count 2500 \
+            --out build/c2026-neutral-sad-human-review
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('build/c2026-neutral-sad-human-review')
+          s=json.loads((p/'summary.json').read_text())
+          assert not s['test_used'] and not s['auto_relabels'] and not s['auto_deletions']
+          assert (p/'human_review_candidates.csv').exists()
+          assert (p/'PRIVATE_manual_review_sheet.jpg').exists()
+          print('PRIVATE label-quality review candidates generated, original dataset unchanged',flush=True)
+          PY
+      - name: Archive real INT8 verification data (not a bitstream)
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C-2026-INT8-PTQ-CPU-Report-and-RTL-Memory
+          path: build/c2026-ptq-int8/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Archive private manual review sheets, never public repository images
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C-2026-Private-Neutral-Sad-Review
+          path: build/c2026-neutral-sad-human-review/
+          retention-days: 30
+          if-no-files-found: error
