@@ -1,4 +1,4 @@
-name: "C8 direct Kaggle progress evidence (short read-only)"
+name: "C8-R1 direct Kaggle progress evidence (short read-only)"
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 6
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-      TARGET: tyhuanga/fpga-c8-stepwise-log-epochs
+      TARGET: tyhuanga/fpga-c8r1-fixedpool-stage-logs
     steps:
       - uses: actions/setup-python@v5
         with:
@@ -28,17 +28,17 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$KAGGLE_API_TOKEN"
-          echo "C8 follow-up status and epoch evidence recheck:"
-          echo "C8 Kaggle direct status:"
+          echo "C8-R1 new GPU status and epoch evidence check:"
+          echo "C8-R1 Kaggle direct status:"
           kaggle kernels status "$TARGET" | tee /tmp/c8-state.txt
-          echo "C8 remote stdout (might be buffered while running):"
+          echo "C8-R1 remote stdout (might be buffered while running):"
           kaggle kernels logs "$TARGET" >/tmp/c8.log 2>&1 || true
           echo "REMOTE_LOG_BYTES=$(wc -c </tmp/c8.log)"
           if test -s /tmp/c8.log; then
             echo "Latest log lines:"
             tail -30 /tmp/c8.log
           fi
-          echo "C8 remote output files:"
+          echo "C8-R1 remote output files:"
           kaggle kernels files "$TARGET" --page-size 20 > /tmp/c8-files.txt 2>&1 || true
           if test -s /tmp/c8-files.txt; then head -30 /tmp/c8-files.txt; else echo "No published output files yet"; fi
           echo "EPOCH_EVIDENCE=$(grep -Ec 'C8 EPOCH|C8_EPOCH_END' /tmp/c8.log || true)"
