@@ -37,6 +37,7 @@ jobs:
       - name: Install authenticated Kaggle CLI
         run: python -m pip install kaggle
 
+      # User reports old C7 stopped; perform fresh authenticated Kaggle checks before GPU launch.
       - name: Safety gate - no second GPU while C7 is active
         id: gate
         shell: bash
