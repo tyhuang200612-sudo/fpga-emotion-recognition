@@ -1,0 +1,58 @@
+name: "C8 private notebook preview (no GPU training)"
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c8-private-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      C8: tyhuanga/fpga-c8-stepwise-log-epochs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Refuse overwrite if C8 already exists
+        id: status
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          status=$(kaggle kernels status "$C8" 2>&1 || true)
+          echo "$status"
+          if echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|COMPLETE|NEW_SCRIPT|ERROR|CANCELLED)'; then
+            echo "already_exists=true" >>"$GITHUB_OUTPUT"
+          elif echo "$status" | grep -Eqi 'not found|404|does not exist|Kernel not found|No kernels'; then
+            echo "already_exists=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "::error::Unknown status: refuse duplicate Kaggle notebook"
+            exit 1
+          fi
+      - name: Install CPU torch and build 37-cell staged C8 notebook
+        if: steps.status.outputs.already_exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m unittest discover -s tests -p test_c8_stepwise.py -v
+          python -m tools.build_kaggle_c8 --out build/kaggle_c8
+      - name: Save C8 PRIVATE notebook without running GPU
+        if: steps.status.outputs.already_exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p build/kaggle_c8 --no-run
+          echo "### C8 preview published without GPU run" >>"$GITHUB_STEP_SUMMARY"
+          echo "Notebook: https://www.kaggle.com/code/tyhuanga/fpga-c8-stepwise-log-epochs" >>"$GITHUB_STEP_SUMMARY"
+          echo "Full GPU training is a separate controlled launch AFTER C7 stops." >>"$GITHUB_STEP_SUMMARY"
