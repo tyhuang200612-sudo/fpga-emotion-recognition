@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 280
     env:
-      KAGGLE_API_TOKEN: \${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       EXPERIMENT: tyhuanga/fpga-c5-gap1-vs-gap2-ablation
     steps:
       - name: Checkout frozen C baseline and experimental C5
