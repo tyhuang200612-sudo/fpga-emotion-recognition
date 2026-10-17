@@ -1,0 +1,54 @@
+name: Read-only C6 Kaggle epoch progress check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c6-readonly-progress.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      EXPERIMENT: tyhuanga/fpga-c6-gap2-frozen-c3-kd
+    steps:
+      - name: Setup Python3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI for read-only status and log calls
+        run: python -m pip install kaggle
+      - name: Read C6 Kaggle live status and epoch logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          echo "::group::Kaggle status"
+          kaggle kernels status "$EXPERIMENT" 2>&1 | tee /tmp/c6-status.txt
+          echo "::endgroup::"
+          echo "::group::Kaggle remote runtime log"
+          set +e
+          kaggle kernels logs "$EXPERIMENT" > /tmp/c6-log.txt 2>&1
+          log_code=$?
+          set -e
+          echo "Kaggle logs exit code: $log_code"
+          echo "Log bytes: $(wc -c </tmp/c6-log.txt)"
+          echo "::endgroup::"
+          echo "::group::C6 actual training epoch evidence (last 35)"
+          grep -E 'C6_EVENT|C6_EPOCH|C6_START|C6_VARIANT_COMPLETE|C6_COMPLETE|Traceback|RuntimeError|CUDA out of memory|ERROR|Exception|progress' /tmp/c6-log.txt | tail -35 || true
+          echo "::endgroup::"
+          echo "::group::Last 30 remote log lines"
+          tail -30 /tmp/c6-log.txt
+          echo "::endgroup::"
+          if grep -q 'C6_EPOCH' /tmp/c6-log.txt; then
+            echo 'Epoch progress: CONFIRMED - at least one C6_EPOCH log exists'
+          else
+            echo 'Epoch progress: NOT CONFIRMED from Kaggle public runtime logs'
+          fi
+          # Never modify Kaggle notebook, checkpoint, GPU settings, or restart job.
