@@ -30,3 +30,11 @@
 - 完成误判定位后，才能决定需要的是手机预处理修复、数据复核还是重新训练 C5。
 - 若需要云端比较 C3 教师与 C2-C 学生，在获知用户许可和隐私要求后，使用同一组48×48裁剪输入做离线批处理评测；不要自动上传图片至公有 GitHub。
 - APK 编译完成且校验后，提交实际包的 GitHub Actions run 与 SHA256 到交接索引。
+
+## 已完成诊断包（2026-10-17）
+- 最终 GitHub Actions：<https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39003424873>，全部步骤通过。
+- 完整的 APK 工件：`TinyCNN-C2C-Phone-Diagnostic-arm64-APK`，artifact ID **12089622870**；下载包可与旧版 C、C2-C 并存。
+- 安卓应用 ID：`com.tyhuanga.fpga.camerac2cdiag`。
+- 本轮实发 APK：`TinyCNN-C2C-Phone-Diagnostic-arm64.apk`（33.49 MiB，SHA256：`3da64020c7a7542c7e25e5647aee666e117f2067cd80a1e6fc3ab7b9d15fc531`）。
+- APK 的 `assets/model-info.json` 校验：`variant=C_distilled`、`selected_epoch=12`、`model=TinyCNN-C2-C Distilled Diagnostic (unchanged weights)`、`manual_samples_only=true`、`no_network_permission=true`；ONNX/PyTorch 输出偏差小于 1e-4。
+- APK 仅完成 CI 编译和产物静态校验，**尚未在用户实际手机上完成运行体验和真实标签诊断**。
