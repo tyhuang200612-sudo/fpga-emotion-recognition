@@ -69,7 +69,7 @@ jobs:
           assert (path/'c2026-baseline.pt').stat().st_size>100000
           assert not (path/'test.csv').exists()
           md={'id':'tyhuanga/fpga-c2026-locked-baseline',
-              'title':'Private frozen C2026 checkpoint and train-val manifests',
+              'title':'C2026 locked private training baseline',
               'is_private':True,
               'licenses':[{'name':'other'}]}
           (path/'dataset-metadata.json').write_text(json.dumps(md,indent=2))
