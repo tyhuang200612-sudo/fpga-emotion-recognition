@@ -124,3 +124,11 @@
 - C7固定同一TinyCNN-C 16/32/64/64 GAP2、C3强教师SHA `ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c`，对照CE与CE(80%)+KD(20%,T=2)，各两seed **不早停而完整训练25轮**，强制strict deterministic CUDA并保存全部100轮epoch日志。
 - [GitHub C7 实际GPU运行 #39010774856](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39010774856)，[Kaggle私有C7 Notebook](https://www.kaggle.com/code/tyhuanga/fpga-c7-gap2-fixed25-deterministic)。启动前数据审计、C7 Notebook生成测试、教师挂载和GPU提交已成功，**本条写入时仍在训练中，尚未得到最终成绩**。
 - 预期artifact名 `TinyCNN-C7-Fixed25-Deterministic-GAP2-CE-vs-KD`，必须在运行成功且核验四份模型、每份完整25轮、100条`EPOCH_END`及`results.json`后才承认实验完成。现役仍为C2-C。原独立TEST、私有手机诊断图和安路真实上板测试均未进入C7。
+
+## C7 无实时日志排查（2026-10-17）
+
+- 真实 GitHub 训练：[Actions #39010774856](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39010774856)；Kaggle 私有内核 `tyhuanga/fpga-c7-gap2-fixed25-deterministic`。**任务提交成功，但在无外部epoch记录前不能称为已确认正常执行模型。**
+- 独立三次只读诊断：[第一次 #39012531459](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39012531459)、[第二次 #39014133032](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39014133032)、[源码+文件API深度检查 #39014326452](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39014326452)。Kaggle反复返回`RUNNING`，`kaggle kernels logs` 仅1字节，运行中 `files/output` 未暴露进度文件；已下载实际8-cell内核源码，并核实末单元`run_c7()`和固定25轮设置。
+- 根因归类：**确定存在可观测性缺陷**：C7整轮100个Epoch在一个长Notebook单元中执行，本地`live-progress.jsonl`无法通过Kaggle当前实时输出接口读取，`c6_progress()`未上报远端Epoch。**尚不能证实GPU实际已跑多少轮、是否卡死。**
+- [根因报告](c7-live-log-forensic-investigation.md)。新增备用[按需归档工作流](../.github/workflows/kaggle-c7-collect-on-demand.yml)，只有Kaggle运行`COMPLETE`时才下载并核验四份权重+100轮，绝不重训；该工作流仅允许手动触发，避免重复GPU计算。
+- 当前长时间GitHub轮询工作流仍可能计入私有仓库Actions分钟。后续训练应改为“提交即返回 + 短时定期检查 + 完成后短时归档”，避免持续占用Runner，不应为查日志反复取消和重训。
