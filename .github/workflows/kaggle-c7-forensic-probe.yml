@@ -1,0 +1,80 @@
+name: "C7 forensic probe: read-only Kaggle outputs and code"
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/kaggle-c7-forensic-probe.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KERNEL: tyhuanga/fpga-c7-gap2-fixed25-deterministic
+    steps:
+      - name: Python and Kaggle read-only CLI
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install kaggle
+
+      - name: Query Kaggle state outputs and verify remote submitted notebook
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          echo '====== KAGGLE CURRENT STATUS ======'
+          kaggle kernels status "$KERNEL" 2>&1 | tee /tmp/state.txt
+          echo '====== REMOTE OUTPUT FILES API ======'
+          timeout 30s kaggle kernels files "$KERNEL" --page-size 50 >/tmp/files.txt 2>&1 || echo 'Files API returned no list (running kernels may not expose outputs)'
+          wc -c /tmp/files.txt
+          head -45 /tmp/files.txt
+          echo '====== REMOTE LOGS API ======'
+          timeout 30s kaggle kernels logs "$KERNEL" >/tmp/logs.txt 2>&1 || echo 'Logs API did not return run output'
+          echo "Log bytes: $(wc -c </tmp/logs.txt)"
+          if test -s /tmp/logs.txt; then tail -20 /tmp/logs.txt; fi
+          echo '====== ATTEMPT TO READ ONLY THE CURRENT RUN PROGRESS JSONL ======'
+          mkdir -p /tmp/c7-progress
+          timeout 45s kaggle kernels output "$KERNEL" -p /tmp/c7-progress             --file-pattern 'live-progress.jsonl' >/tmp/output-api.txt 2>&1 || echo 'Progress output not yet exposed'
+          wc -c /tmp/output-api.txt
+          tail -16 /tmp/output-api.txt
+          echo '====== REMOTE NOTEBOOK CODE INSPECTION ======'
+          mkdir -p /tmp/c7-source
+          timeout 40s kaggle kernels pull "$KERNEL" -p /tmp/c7-source -m >/tmp/pull.txt 2>&1 || true
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          files=list(Path('/tmp/c7-source').rglob('*.ipynb'))
+          print('Remote notebook count:',len(files))
+          if len(files)==1:
+            b=json.loads(files[0].read_text())
+            cells=b.get('cells',[])
+            print('Remote notebook cell count:',len(cells))
+            if len(cells)==8:
+              code=''.join(cells[6]['source'])
+              entry=''.join(cells[7]['source'])
+              for key in ('def run_c7():','C7_EPOCHS=25',
+                          'torch.use_deterministic_algorithms(True',
+                          'c6_progress("EPOCH_END"', 'C6_PATIENCE=C7_EPOCHS+1'):
+                print(key,key in code)
+              print('Final cell actually launches run_c7():','run_c7()' in entry)
+          loglist=list(Path('/tmp/c7-progress').rglob('live-progress.jsonl'))
+          print('Live progress files available:',len(loglist))
+          for path in loglist:
+            events=[]
+            for line in path.read_text().splitlines():
+              try: events.append(json.loads(line))
+              except Exception: pass
+            counts={key:sum(1 for x in events if x.get('stage')==key)
+                    for key in ('START','VARIANT_START','BATCH','EPOCH_END','COMPLETE')}
+            print('REAL EPOCH EVENT COUNTS:',counts)
+            print('Last stage:',events[-1].get('stage') if events else 'none')
+          PY
+          echo '====== SECOND STATE QUERY (READ-ONLY) ======'
+          kaggle kernels status "$KERNEL" 2>&1 || true
+          echo 'No GPU job restarted, canceled, overwritten or newly submitted.'
