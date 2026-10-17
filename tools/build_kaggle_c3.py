@@ -35,7 +35,7 @@ def build_c3(repo_root:Path,out_dir:Path):
     assert "find_dataset_root" in base
     overlay=(repo_root/"tools"/"c3_camera_augment_teacher.py").read_text(encoding="utf-8")
     assert "class PretrainedTeacher" in overlay and "test_evaluated" in overlay
-    assert "run_c3()" not in overlay
+    assert "\nrun_c3()\n" not in overlay, "Training must not run during notebook build"
     combined=(base.rstrip()+"\n\n"+overlay).replace('"C2_EVENT"','"C3_EVENT"')
     compile(combined,"c3-training","exec")
     cells[6]["source"]=combined.splitlines(keepends=True)
