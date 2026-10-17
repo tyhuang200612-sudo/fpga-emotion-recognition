@@ -92,6 +92,24 @@ def c8_begin(mode,seed):
         raise RuntimeError("Must execute C8 experiments in predetermined paired order")
     c5_seed_all(seed)
     model,err=c5_make_model("GAP2_spatial",s["baseline"],s["device"])
+    # C8-R1 hotfix: CUDA adaptive_avg_pool2d backward raises RuntimeError
+    # when torch.use_deterministic_algorithms(True).  The input to the
+    # GAP2 head is [B,64,12,12], so fixed AvgPool2d(6,6) is exactly the
+    # same 2x2 non-overlapping quadrant mean and has deterministic gradients.
+    # This changes NO learned weights, no classifier width and no GAP values.
+    source_pool=model.gap
+    sample=(torch.arange(64*12*12,device=s["device"],dtype=torch.float32)
+            .reshape(1,64,12,12)/1000.0)
+    with torch.no_grad():
+        original_pool=source_pool(sample)
+        fixed_pool=F.avg_pool2d(sample,kernel_size=6,stride=6)
+    if original_pool.shape!=(1,64,2,2) or not torch.allclose(
+            original_pool,fixed_pool,atol=2e-5,rtol=1e-6):
+        raise RuntimeError("GAP2 adaptive-vs-fixed output parity failed")
+    model.gap=nn.AvgPool2d(kernel_size=6,stride=6)
+    c6_progress("C8_FIXED_GAP2_POOL_VERIFIED",mode=mode,seed=seed,
+                kernel=6,stride=6,shape=[64,12,12],
+                strict_determinism=torch.are_deterministic_algorithms_enabled())
     c5_seed_all(seed)
     training=loader(s["rows"],s["root"],True,seed)
     val_loader=loader(s["val_rows"],s["root"],False,seed)
