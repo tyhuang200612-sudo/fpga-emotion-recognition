@@ -132,3 +132,14 @@
 - 根因归类：**确定存在可观测性缺陷**：C7整轮100个Epoch在一个长Notebook单元中执行，本地`live-progress.jsonl`无法通过Kaggle当前实时输出接口读取，`c6_progress()`未上报远端Epoch。**尚不能证实GPU实际已跑多少轮、是否卡死。**
 - [根因报告](c7-live-log-forensic-investigation.md)。新增备用[按需归档工作流](../.github/workflows/kaggle-c7-collect-on-demand.yml)，只有Kaggle运行`COMPLETE`时才下载并核验四份权重+100轮，绝不重训；该工作流仅允许手动触发，避免重复GPU计算。
 - 当前长时间GitHub轮询工作流仍可能计入私有仓库Actions分钟。后续训练应改为“提交即返回 + 短时定期检查 + 完成后短时归档”，避免持续占用Runner，不应为查日志反复取消和重训。
+
+
+## C8 分阶段日志重训（2026-10-17，准备完成、GPU待安全启动）
+- 用户要求重新训练且能查看日志。此前 C7 均采用一个长训练cell，Kaggle `kernels logs/files/output` 运行期间均返回空白，未得到任何实际Epoch证据。
+- C8 新源代码 `tools/train_c8_stepwise.py`、`tools/build_kaggle_c8.py`、`tests/test_c8_stepwise.py`。已通过 [离线CPU检查 #39015231043](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39015231043)：37个独立Notebook代码/元单元、**20个每5 Epoch结束的训练cell**，共4份模型×25轮，每轮打印、写 `live-progress.jsonl`；每5轮保存 `stage_XX.pt`、`history.json`，最后保留 `best.pt`与`results.json`。
+- [完整说明](c8-staged-kaggle-logging-and-safe-relaunch.md)。
+- GitHub短工作流 `.github/workflows/kaggle-c8-staged-launch.yml` **每30分钟核实**原C7与新C8 Kaggle状态。原C7 `RUNNING`时**坚决不启动第二份GPU**；C7结束、C8不存在后提交一次新Kaggle私有kernel `tyhuanga/fpga-c8-stepwise-log-epochs`；C8完成后再次运行短任务校验100个训练事件与4份权重、上传 `TinyCNN-C8-Staged-GAP2-CE-vs-KD-Fixed25-Logs` 工件。此记录创建时 **C8 尚未启动GPU**，不得将GH安全检查Success当训练成功。短检查替代GitHub Runner长时间占用等待。
+- Google Kaggle当前CLI版本的 `kaggle kernels push --no-run` 不可用，故私有无GPU预览若不支持则安全地跳过，改成下载经本地测试的 Notebook GitHub artifact `C8-Staged-37-Cell-Kaggle-Notebook-Source`，由 `.github/workflows/kaggle-c8-private-preview.yml` 发布，**不会意外触发GPU训练**。
+- 为节省Kaggle GPU配额，用户若希望立即开始C8，需要先在Kaggle旧C7运行会话操作Stop，或等原C7自然结束；一旦C7停止，自动安全启动可能延迟最多约30分钟（受GitHub Actions schedule排队影响）。
+- **重要限制**：拆分Notebook cells提高Kaggle活动页面可观察性，但当前Kaggle CLI API不保证训练结束之前提供日志或阶段文件；不能承诺外部API实时逐Epoch直播，最终完成后至少完整提供100条Epoch、20条阶段和20份stage权重用于审计。
+- 未触碰独立TEST，未上传用户人脸图片或错误标签，未自动替换C2-C、Android APK或FPGA ROM；不能预先填报C8验证/手机准确率。
