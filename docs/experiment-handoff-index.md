@@ -37,3 +37,26 @@
 - 学生 TinyCNNC 仍为 **16/32/64/64**；C3 强教师冻结复用，不扩大部署学生、不重复用测试集选模型。
 - 不同温度和权重的蒸馏 + neutral/sad 成对监督；两个 seed 对照，报告两类召回、Macro-F1 及混淆矩阵。
 - 只有相对已有 C2-C 的提升具有复现性且不牺牲中性/悲伤平衡，才考虑更新手机测试 APK；正式 FPGA 交接还需 INT8 与 RTL 对照。
+
+
+## C4 冻结教师双随机种子蒸馏：已结束，未达到发布门槛（2026-10-17）
+- 成功运行：<https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39001287016>；Kaggle 私有 Notebook：<https://www.kaggle.com/code/tyhuanga/fpga-c4-balanced-knowledge-distill>。
+- GitHub 工件：`TinyCNN-C4-Frozen-C3-Teacher-Two-Seed-ValidationOnly`，artifact ID **12089304028**，含两种方案×两个随机种子的4份 `best.pt`、训练历史、`results.json`、`progress.jsonl` 与 Kaggle log。
+- 在此对话已下载完整 `C4-final-validated-results.zip`，SHA256：**9a40aff20b9320c38ec5a62b0d15ecd319ca8633164e4701cdc4666891623d1f**，解压后检查 ZIP 完整性通过（11个条目）。
+- 冻结 C3 教师 VAL Macro-F1 **0.785745858**，中性/悲伤互相混淆364；C4 四次运行均复用了精确 SHA256 `ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c` 的教师权重。
+- 原版 C VAL Macro-F1 **0.747072860**，中性/悲伤互相混淆417；历史 C2-C VAL Macro-F1 **0.751586**，中性/悲伤互相混淆408。
+- C4 `C4_pairwise`：
+  - Seed 20261019：epoch 1；accuracy 0.758308；Macro-F1 **0.740873**；neutral recall **0.627158**；sad recall **0.741706**；中性/悲伤互相误判 **421**。
+  - Seed 20261020：epoch 14；accuracy 0.762001；Macro-F1 **0.745980**；neutral recall **0.639816**；sad recall **0.753555**；互相误判 **413**。
+  - 两种子平均 Macro-F1 **0.743426**，平均互相误判 **417**。
+- C4 `C4_margin`：
+  - Seed 20261019：epoch 1；accuracy 0.758644；Macro-F1 **0.740944**；neutral recall **0.630610**；sad recall **0.733412**；互相误判 **414**。
+  - Seed 20261020：epoch 23；accuracy 0.763679；Macro-F1 **0.744613**；neutral recall **0.655926**；sad recall **0.694313**；互相误判 **405**。
+  - 两种子平均 Macro-F1 **0.742779**，平均互相误判 **409.5**。
+- `robust_winner_by_validation = none`，**C4 没有发布到 Android，也没有覆盖原版 FPGA 权重**；`test_evaluated=false`，`phone_camera_evaluated=false`。
+- 下一轮应该先做诊断：控制单变量剥离 C4 的手机增强/强中性悲伤损失/置信度门控；评估小学生可达到的上界与域差异；需要独立、知情采集的手机真实表情数据评测才能宣称手机性能提升。禁止仅通过选阈值或不断刷冻结 VAL 来制造提升。
+
+## 交接备份状态提醒
+- 完整本地交接包 `FPGA_Emotion_C2_C3_Handoff_2026-10-17.zip` 已存在当前对话的下载资产中，含 `C2_results.zip`、`C3_results.zip`、`manifest.json`，本地 SHA256 **597a2bdbaa8504bf96ddf9302a1f228fdeb37a4d0d4de2b43b57deaf90e493e5**。
+- 试图创建 Kaggle 私有备份 `tyhuanga/fpga-emotion-handoff-c2-c3` 的 GitHub Action **39001467186 为 failure**：上传命令返回成功，但超过等待期仍无法验证数据集文件列表。**私有 Kaggle 交接备份的可下载性尚未确认，不能标记“已永久备份成功”**。后续交接须核实这一点。
+- C4 独立模型归档工件只有 30 天保留期；正式交接前需要下载/核验并合并到最新交接包，或写入经过验证的私有持久备份。
