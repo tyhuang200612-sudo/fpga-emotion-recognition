@@ -39,7 +39,7 @@ def build_c2(repo_root:Path,out_dir:Path):
     src=src.rsplit('if __name__=="__main__":',1)[0]
     if "from src.model_c import" in src or "from tools.prepare_fer2013 import" in src:
         raise RuntimeError("Notebook must have no local filesystem dependency")
-    if "TEST" not in src or "test_evaluated" not in src:
+    if "test_evaluated" not in src or 'val_rows=load_rows(files/"val.csv")' not in src:
         raise RuntimeError("C2 test isolation guard missing")
     # Kaggle C pretrained model/data files come via *private attached dataset*.
     cells[6]["source"]=src.splitlines(keepends=True)
