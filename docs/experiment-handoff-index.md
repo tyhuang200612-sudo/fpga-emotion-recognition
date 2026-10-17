@@ -87,3 +87,11 @@
 - 结构理论资源：60,240→60,816 Conv+FC int8 权重（增加576），无实际 RTL、BRAM、时序、INT8 新模型对照。训练结果 `test_evaluated=false`、`phone_camera_evaluated=false`、`no_automatic_deployment=true`。**不得直接替换原 FPGA C、手机 C2-C 或宣传手机场景已变好**。
 - 归档含 4 份 `best.pt`、4 份 `history.json`、`results.json`、进度日志和 Kaggle log；交接时连同 C2/C3/C4 旧包以及 manifest 合并，并核验 SHA256。工作流工件有有效期，请避免过期后唯一副本丢失。
 - **下一步**：这次针对 GAP 的证据是“优于同期对照，但未达历史最佳”。若继续研发，建议在固定结构下开展 GAP2 学生知识蒸馏 vs GAP2 普通训练的严格同配置对照，并分离新手机用户/场景测试集；不要直接用已反复观察的19张连续悲伤图选模型。
+
+## C6 GAP2 教师蒸馏对照（2026-10-17，正在训练）
+- [实验协议](c6-gap2-distillation-protocol.md)。固定 C5 GAP2 结构（Conv通道16/32/64/64、2×2池化、FC256→3），从冻结C2026权重精确初始化。
+- 对照 `GAP2_CE_control`（普通加权交叉熵）与 `GAP2_C3_KD`（80%加权CE + 20%冻结C3强教师KL，T=2），两个配对随机种子 20261021/20261022，全部相同 FER2013 train/val和训练设置。
+- Kaggle私人模型：[fpga-c6-gap2-frozen-c3-kd](https://www.kaggle.com/code/tyhuanga/fpga-c6-gap2-frozen-c3-kd)，GitHub Actions [#39006028260](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39006028260)。
+- GPU私有数据集包含C3冻结ImageNet预训练教师，训练脚本将核对教师SHA256、验证集分数与样本数量。原独立TEST不参与模型选择，不使用用户手机诊断原图，不自动改表情标签。
+- 预期工件 `TinyCNN-C6-GAP2-CE-vs-C3Teacher-KD-TwoSeeds-ValidationOnly`，**此条记录写入时训练仍在进行，尚无可信最终成绩**；收到完整归档后必须检查4份最佳模型、分种子精度、双向混淆数、门槛、SHA256、有效期并加入交接包。
+- 禁止C6训练后直接替换Android APK/FPGA权重；尚未量化或完成安路RTL上板验证。
