@@ -42,7 +42,7 @@ def audit(c5_zip:Path,c6_zip:Path):
                 raise ValueError("Unexpected data policy")
         if c5["frozen_original_test_manifest_sha256"]!=c6["frozen_test_sha256"]:
             raise ValueError("C5/C6 original TEST hash changed")
-        if c5["train_val_counts"]!=c6["train_val_count"]!=[13571,2979]:
+        if c5["train_val_counts"]!=c6["train_val_count"] or c5["train_val_counts"]!=[13571,2979]:
             raise ValueError("Train/validation size changed")
         common=min(len(h5),len(h6))
         train_loss_mae=statistics.mean(
