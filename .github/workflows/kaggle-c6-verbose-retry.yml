@@ -1,0 +1,195 @@
+name: C6 verbose retry: C5-GAP2 CE vs frozen C3 distillation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c6-verbose-retry.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c6-verbose-retry1-only
+  cancel-in-progress: false
+
+jobs:
+  c6-paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      EXPERIMENT: tyhuanga/fpga-c6-gap2-kd-verbose-retry1
+      TEACHER_DATASET: tyhuanga/fpga-c3-locked-teacher
+    steps:
+      - name: Read original C and independent C6 source
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CPU PyTorch for no-GPU preflight
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Validate identical GAP2 student and private two-seed notebook
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p test_c6_spatial_kd.py -v
+          python -m unittest discover -s tests -p test_c6_verbose.py -v
+          python -m tools.build_kaggle_c6_verbose --out build/kaggle_c6_verbose
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('build/kaggle_c6_verbose/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c6-gap2-kd-verbose-retry1'
+          assert m['is_private'] and m['enable_gpu']
+          assert set(m['dataset_sources'])=={
+            'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline',
+            'tyhuanga/fpga-c3-locked-teacher'}
+          print('C6 paired model and private dataset preflight passed')
+          PY
+
+      - name: Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Verify frozen C3 teacher dataset attachment exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          kaggle datasets files "$TEACHER_DATASET" >/tmp/c6_teacher_files.txt
+          grep -q 'c3_teacher-best.pt' /tmp/c6_teacher_files.txt
+          echo 'C3 frozen pretrained teacher attachment is available.'
+          # The GPU code later checks actual teacher bytes against SHA256.
+
+      - name: Refuse to overwrite an active or completed C6 experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=$(kaggle kernels status "$EXPERIMENT" 2>&1 || true)
+          echo "$state"
+          if echo "$state" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED|COMPLETE)'; then
+            echo "::error::A C6 training exists; inspect before replacing it"
+            exit 1
+          fi
+
+      - name: Confirm original C6 manually stopped before new GPU attempt
+        shell: bash
+        run: |
+          set -euo pipefail
+          old="tyhuanga/fpga-c6-gap2-frozen-c3-kd"
+          for n in $(seq 1 12); do
+            state=$(kaggle kernels status "$old" 2>&1 || true)
+            echo "Original C6 check $n: $state"
+            if echo "$state" | grep -Eq 'KernelWorkerStatus\\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
+              sleep 15
+              continue
+            fi
+            echo 'Original C6 no longer running; new slug is independent.'
+            exit 0
+          done
+          echo "::error::Old C6 still active; do not start overlapping GPU training"
+          exit 1
+
+      - name: Launch private C6 Kaggle T4 GPU experiments
+        run: kaggle kernels push -p build/kaggle_c6_verbose --accelerator NvidiaTeslaT4
+
+      - name: Verify remote Kaggle private metadata and frozen inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/c6-verbose-remote
+          kaggle kernels pull "$EXPERIMENT" -p build/c6-verbose-remote -m
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('build/c6-verbose-remote/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c6-gap2-kd-verbose-retry1'
+          assert m['is_private'] is True and m['enable_gpu'] is True
+          assert set(m['dataset_sources'])=={
+              'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline',
+              'tyhuanga/fpga-c3-locked-teacher'}
+          print('C6 actual GPU metadata and teacher attachment verified')
+          PY
+
+      - name: Monitor single C6 training job without restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 440); do
+            status=$(kaggle kernels status "$EXPERIMENT" 2>&1)
+            echo "C6 verbose retry status $n: $status"
+            if test $((n % 4)) -eq 0; then
+              echo "::group::C6 live progress log check $n"
+              kaggle kernels logs "$EXPERIMENT" >/tmp/c6-verbose-live.log 2>&1 || true
+              if test -s /tmp/c6-verbose-live.log; then
+                grep -E 'C6_PROGRESS|C6_EVENT|Traceback|RuntimeError|Exception' /tmp/c6-verbose-live.log | tail -10 || true
+              else
+                echo 'Kaggle returned no mid-run logs; stdout may be buffered until kernel completes.'
+              fi
+              echo "::endgroup::"
+            fi
+            if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then exit 0; fi
+            if echo "$status" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+              echo "::error::C6 remote job failed, check Kaggle logs; do not invent metrics"
+              exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::C6 exceeded monitoring window without result"
+          exit 1
+
+      - name: Fetch real C6 four weights and validation results
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p c6-verbose-archive
+          kaggle kernels output "$EXPERIMENT" -p c6-verbose-archive
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          results=list(Path('c6-verbose-archive').rglob('results.json'))
+          assert len(results)==1,results
+          root=results[0].parent
+          r=json.loads(results[0].read_text())
+          assert r['student_architecture']=='TinyCNN-C 16/32/64/64 with GAP2+FC 256->3'
+          assert r['head_pool']==2
+          assert r['train_val_count']==[13571,2979]
+          assert r['student_seeds']==[20261021,20261022]
+          assert r['quality_policy']=='fer2013-three-class-safe-pixel-dedup-v1'
+          assert r['teacher_checkpoint_sha256']=='ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c'
+          assert not r['test_evaluated'] and not r['phone_camera_evaluated']
+          assert r['no_relabeling'] and r['no_deployment'] and not r['int8_fpga_verified']
+          assert set(r['variants'])=={'GAP2_CE_control','GAP2_C3_KD'}
+          assert r['theoretical_fpga_resources']['gap2_int8_weights_without_bn_bias']==60816
+          for mode in ('GAP2_CE_control','GAP2_C3_KD'):
+            for seed in (20261021,20261022):
+              ck=root/mode/('seed_'+str(seed))/'best.pt'
+              assert ck.is_file() and ck.stat().st_size>100000,ck
+          print('C6 VALIDATION-ONLY real two-seed summary:',json.dumps({
+            key:{'mean_macro_f1':v['mean_macro_f1'],
+                 'mean_pair_errors':v['mean_pair_errors'],
+                 'per_seed':{
+                   s:{'f1':x['validation']['macro_f1'],'neutral':x['validation']['recall']['neutral'],
+                      'sad':x['validation']['recall']['sad'],'pairs':x['pair_errors']}
+                   for s,x in v['per_seed'].items()
+                 }} for key,v in r['variants'].items()},ensure_ascii=False,indent=2))
+          print('C6 robust gate:',r['robust_improvement_gate'])
+          PY
+
+      - name: Archive complete C6 model and validation-only evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C6-Verbose-Retry1-GAP2-CE-vs-C3KD-TwoSeeds
+          path: c6-verbose-archive/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Emit failure logs; never rerun silently
+        if: failure()
+        run: kaggle kernels logs "$EXPERIMENT" || true
