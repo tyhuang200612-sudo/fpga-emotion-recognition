@@ -70,3 +70,20 @@
 - GitHub提交源码：`src/model_c5.py`、`tools/train_c5.py`、`tools/build_kaggle_c5.py`、`tests/test_c5_spatial.py`、`.github/workflows/kaggle-c5-spatial-ablation.yml`。
 - **截止编写时状态：GPU运行中**，未产生可验证的C5成绩/权重，不能声称已改善或已可部署；归档工件名预留 `TinyCNN-C5-GAP1-vs-GAP2-TwoSeeds-ValidationOnly`，仅任务成功后才能引用下载和校验哈希。
 - 本轮无用户人脸图提交到GitHub；`docs/camera-teacher-student-diagnostic-2026-10-17.md` 仅为不含照片和身份的汇总。
+
+
+## C5 最终训练成绩（2026-10-17；冻结VAL，仅结构消融）
+- GitHub 训练归档：[Actions #39004573026](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39004573026)；Kaggle 私有 Notebook：`tyhuanga/fpga-c5-gap1-vs-gap2-ablation`；GitHub Artifact 名 `TinyCNN-C5-GAP1-vs-GAP2-TwoSeeds-ValidationOnly`，artifact ID **12090472500**，压缩包名 `C5-GAP1-vs-GAP2-ValidationOnly.zip`，SHA256 **19f43cc26cdef6c308d9fbfafcb6b383b3f522823356b7b51ab74416369a0055**。
+- 原版 C 验证 Macro-F1 **0.747072860**，中性↔悲伤误判 **417**；既有 C2-C 参考 Macro-F1 **0.751586412**、误判 **408**。
+- GAP1 控制组（和 GAP2 同配置、相同 seed）：
+  - seed 20261021 epoch 8：accuracy **0.763343404**、Macro-F1 **0.746861493**、neutral recall **0.645570**、sad recall **0.742891**、中性↔悲伤互相误判 **411**。
+  - seed 20261022 epoch 1：accuracy **0.757972474**、Macro-F1 **0.741207168**、neutral recall **0.600690**、sad recall **0.787915**、互相误判 **423**。
+  - **平均 Macro-F1 0.744034330，平均互相误判417**。
+- GAP2 空间池化实验组：
+  - seed 20261021 epoch 8：accuracy **0.765693186**、Macro-F1 **0.748928014**、neutral recall **0.668585**、sad recall **0.715640**、互相误判 **407**。
+  - seed 20261022 epoch 21：accuracy **0.770392749**、Macro-F1 **0.752068108**、neutral recall **0.651323**、sad recall **0.722749**、互相误判 **395**。
+  - **平均 Macro-F1 0.750498061，平均互相误判401**。相较本次 GAP1 控制组 Macro-F1 **+0.006463731**（+0.646 个百分点）、平均误判 **-16**；但比历史 C2-C 参考分数仍低约 **0.001088351**（-0.109 个百分点）。
+- **资格判断：`gap2_qualified_for_independent_phone_test=false`，两个 seed 均未通过预设的“对 C2-C 至少 +0.005 Macro-F1、误判至少少10、两类召回不明显下降”的全部要求。中性召回约0.6686与0.6513仍低于C2-C约0.6824；悲伤召回0.7156与0.7227也低于C2-C约0.7299。**
+- 结构理论资源：60,240→60,816 Conv+FC int8 权重（增加576），无实际 RTL、BRAM、时序、INT8 新模型对照。训练结果 `test_evaluated=false`、`phone_camera_evaluated=false`、`no_automatic_deployment=true`。**不得直接替换原 FPGA C、手机 C2-C 或宣传手机场景已变好**。
+- 归档含 4 份 `best.pt`、4 份 `history.json`、`results.json`、进度日志和 Kaggle log；交接时连同 C2/C3/C4 旧包以及 manifest 合并，并核验 SHA256。工作流工件有有效期，请避免过期后唯一副本丢失。
+- **下一步**：这次针对 GAP 的证据是“优于同期对照，但未达历史最佳”。若继续研发，建议在固定结构下开展 GAP2 学生知识蒸馏 vs GAP2 普通训练的严格同配置对照，并分离新手机用户/场景测试集；不要直接用已反复观察的19张连续悲伤图选模型。
