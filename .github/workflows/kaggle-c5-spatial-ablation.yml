@@ -1,0 +1,167 @@
+name: C5 GAP1 versus GAP2 paired structural ablation (private Kaggle)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c5-spatial-ablation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c5-paired-spatial-ablation
+  cancel-in-progress: false
+
+jobs:
+  c5-ablation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 280
+    env:
+      KAGGLE_API_TOKEN: \${{ secrets.KAGGLE_API_TOKEN }}
+      EXPERIMENT: tyhuanga/fpga-c5-gap1-vs-gap2-ablation
+    steps:
+      - name: Checkout frozen C baseline and experimental C5
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: CPU PyTorch to verify exact GAP2 initial logit parity
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Model and notebook tests, no Kaggle GPU yet
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p 'test_c5_spatial.py' -v
+          python -m tools.build_kaggle_c5 --out build/kaggle_c5
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('build/kaggle_c5/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c5-gap1-vs-gap2-ablation'
+          assert m['is_private'] and m['enable_gpu']
+          assert set(m['dataset_sources'])=={'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline'}
+          notebook=json.loads((Path('build/kaggle_c5')/m['code_file']).read_text())
+          cells=notebook['cells']
+          assert len(cells)==8
+          assert ''.join(cells[7]['source']).endswith('run_c5()\n')
+          code=''.join(cells[6]['source'])
+          assert '"test_evaluated":False' in code
+          assert 'load_rows(manifest/"val.csv")' in code
+          assert 'load_rows(manifest/"test.csv")' not in code
+          print('C5 architecture and privacy preflight verified; no GPU yet')
+          PY
+
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Refuse to overwrite an existing successful or active Kaggle C5 experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          state=$(kaggle kernels status "$EXPERIMENT" 2>&1 || true)
+          echo "$state"
+          if echo "$state" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED|COMPLETE)'; then
+            echo "::error::C5 already running or complete; inspect existing run before any retraining"
+            exit 1
+          fi
+
+      - name: Push isolated private C5 two-seed GPU ablation
+        run: kaggle kernels push -p build/kaggle_c5 --accelerator NvidiaTeslaT4
+
+      - name: Verify actual remotely attached frozen data and GPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/remote-c5
+          kaggle kernels pull "$EXPERIMENT" -p build/remote-c5 -m
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('build/remote-c5/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c5-gap1-vs-gap2-ablation'
+          assert m['is_private'] is True and m['enable_gpu'] is True
+          assert set(m['dataset_sources'])=={'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline'}
+          print('C5 private GPU and frozen FER source mounts verified.')
+          PY
+
+      - name: Monitor one exact C5 job (no automatic GPU restart)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 390); do
+            state=$(kaggle kernels status "$EXPERIMENT" 2>&1)
+            echo "C5 GPU status $n: $state"
+            if echo "$state" | grep -q 'KernelWorkerStatus.COMPLETE'; then exit 0; fi
+            if echo "$state" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+              echo "::error::C5 stopped remotely; do not mislabel an incomplete training run as a result"
+              exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::C5 monitoring window exhausted; no auto-rerun"
+          exit 1
+
+      - name: Retrieve and validate all four independent C5 weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p c5-archive
+          kaggle kernels output "$EXPERIMENT" -p c5-archive
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          located=list(Path('c5-archive').rglob('results.json'))
+          assert len(located)==1,located
+          root=located[0].parent
+          r=json.loads(located[0].read_text())
+          assert r['architecture_conv_channels']==[16,32,64,64]
+          assert r['head_pools']==[1,2]
+          assert r['seeds']==[20261021,20261022]
+          assert r['train_val_counts']==[13571,2979]
+          assert r['quality_policy']=='fer2013-three-class-safe-pixel-dedup-v1'
+          assert not r['test_evaluated'] and not r['phone_camera_evaluated']
+          assert r['no_relabels'] and r['no_new_teacher_training']
+          assert r['no_automatic_deployment'] and r['not_fpga_int8_quantized']
+          assert set(r['variants'])=={'GAP1_control','GAP2_spatial'}
+          hw=r['resource_estimates_theoretical']
+          assert hw['gap1_int8_weights_without_bn_bias']==60240
+          assert hw['gap2_int8_weights_without_bn_bias']==60816
+          assert hw['extra_classifier_weights']==576
+          for mode in ('GAP1_control','GAP2_spatial'):
+            for seed in (20261021,20261022):
+              ck=root/mode/('seed_'+str(seed))/'best.pt'
+              assert ck.is_file() and ck.stat().st_size>100000,ck
+          print('C5 real VALIDATION ONLY summary:',json.dumps({
+            mode: {
+              'mean_macro_f1':d['mean_macro_f1'],
+              'per_seed_macro_f1':d['per_seed_macro_f1'],
+              'mean_pair_errors':d['mean_pair_errors'],
+              'per_seed_pair_errors':d['per_seed_pair_errors'],
+              'robust_gate':d['both_seeds_pass_reference_gate']
+            } for mode,d in r['variants'].items()
+          },indent=2,ensure_ascii=False),flush=True)
+          print('GAP2 improvement:',r['gap2_minus_gap1_mean_macro_f1'])
+          print('GAP2 qualifies for later independent phone testing:',
+                r['gap2_qualified_for_independent_phone_test'])
+          PY
+
+      - name: Archive four student checkpoints, validation report, logs for handoff
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C5-GAP1-vs-GAP2-TwoSeeds-ValidationOnly
+          path: c5-archive/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Show Kaggle failure log without rerunning
+        if: failure()
+        run: kaggle kernels logs "$EXPERIMENT" || true
