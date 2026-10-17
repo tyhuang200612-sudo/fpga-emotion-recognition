@@ -68,6 +68,7 @@ jobs:
           fi
           if echo "$new" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED)'; then
             echo "safe_to_launch=false" >>"$GITHUB_OUTPUT"
+            echo "c8_active=true" >>"$GITHUB_OUTPUT"
             echo "::notice::C8 already running; no new GPU, no long waiting."
             echo "### Already launched" >>"$GITHUB_STEP_SUMMARY"
             echo "C8 is running. Check the Kaggle notebook for completed stage cells." >>"$GITHUB_STEP_SUMMARY"
@@ -88,6 +89,23 @@ jobs:
           fi
           echo "safe_to_launch=true" >>"$GITHUB_OUTPUT"
           echo "### C8 ready for private GPU submission" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Capture Kaggle C8 live status and available logs (short, read-only)
+        if: steps.gate.outputs.c8_active == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== $(date -u -Iseconds) C8 LIVE CHECK ==="
+          kaggle kernels status "$NEW_KERNEL"
+          timeout 30 kaggle kernels logs "$NEW_KERNEL" >/tmp/c8-progress.log 2>&1 || true
+          echo "C8_REMOTE_LOG_BYTES=$(wc -c </tmp/c8-progress.log)"
+          if test -s /tmp/c8-progress.log; then
+            grep -E 'C8 EPOCH|C8_STAGE_DONE|C8_EPOCH_END|Traceback|RuntimeError|Error' /tmp/c8-progress.log | tail -35 || true
+          fi
+          epochs=$(grep -Ec 'C8_EPOCH_END' /tmp/c8-progress.log || true)
+          echo "VISIBLE_C8_EPOCH_EVENTS=$epochs"
+          echo "Kaggle may buffer cell output until the kernel version completes."
+          echo "Read-only check; no GPU changes."
 
       - name: Install CPU PyTorch and prove 20 separately visible stage cells
         if: steps.gate.outputs.safe_to_launch == 'true'
