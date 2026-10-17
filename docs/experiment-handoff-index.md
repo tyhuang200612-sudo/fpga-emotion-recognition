@@ -115,3 +115,12 @@
 - C6-C3KD双seed Macro-F1 **74.9325%**、中性↔悲伤混淆平均 **401**，对应同期GAP2-CE双seed **74.4751%**、混淆平均 **412.5**；虽然蒸馏平均提升 **0.4574 个百分点**、混淆少 **11.5**，但**没有超过历史 C2-C 75.1586% 的F1，两个seed均未通过可靠升级门槛**（`robust_improvement_gate=false`）。
 - 原用户手机19张近重复悲伤图没有用于训练或本实验验证。独立 TEST 未触碰。尚无手机/FPGA INT8部署。保留原C2-C为现役。
 - **注意**：同设置同期CE与历史C5 GAP2分数不同，表明随机数控制/复现性等还有待审计；不能宣称蒸馏效果在独立实验中稳定。
+
+
+## C7 训练可复现性审计与固定25轮实验（2026-10-17）
+- [独立诊断与数据风险报告](c7-reproducibility-data-audit.md) 通过原始C5 artifact **12090472500** (SHA256 `19f43cc26cdef6c308d9fbfafcb6b383b3f522823356b7b51ab74416369a0055`) 和C6 artifact **12091822756** (SHA256 `1e3d042a15c4980bb65675cd6cd515ad957fd70384353b52a7ef3a816015d241`) 复核。
+- **明确定位到早停敏感性**：同seed20261022，C5 GAP2在epoch8因相对epoch1微小Macro-F1增长（约0.000086）重置早停等待，完成25轮、最佳epoch21 F1=0.752068；C6同期GAP2普通训练在epoch8早停、最佳epoch1 F1=0.742262。这解释两轮结果差距被早停放大，但细微GPU差异的唯一来源尚未证实。
+- 代码修复和审计：`tools/audit_c5_c6_repro.py`、`tools/train_c7_fixed25.py`、`tools/build_kaggle_c7.py`、`tests/test_c7_fixed25.py`、`.github/workflows/kaggle-c7-deterministic.yml`。独立审计已通过GitHub实际原档下载、哈希与训练/验证划分校验。
+- C7固定同一TinyCNN-C 16/32/64/64 GAP2、C3强教师SHA `ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c`，对照CE与CE(80%)+KD(20%,T=2)，各两seed **不早停而完整训练25轮**，强制strict deterministic CUDA并保存全部100轮epoch日志。
+- [GitHub C7 实际GPU运行 #39010774856](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39010774856)，[Kaggle私有C7 Notebook](https://www.kaggle.com/code/tyhuanga/fpga-c7-gap2-fixed25-deterministic)。启动前数据审计、C7 Notebook生成测试、教师挂载和GPU提交已成功，**本条写入时仍在训练中，尚未得到最终成绩**。
+- 预期artifact名 `TinyCNN-C7-Fixed25-Deterministic-GAP2-CE-vs-KD`，必须在运行成功且核验四份模型、每份完整25轮、100条`EPOCH_END`及`results.json`后才承认实验完成。现役仍为C2-C。原独立TEST、私有手机诊断图和安路真实上板测试均未进入C7。
