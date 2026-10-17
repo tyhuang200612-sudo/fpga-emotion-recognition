@@ -10,7 +10,18 @@ Models are NOT deployed or INT8 exported by this script.
 import hashlib
 from torchvision.models import resnet18
 
-C6_OUT=Path("/kaggle/working/fpga-fer2013-c6-gap2-kd-ablation")
+C6_OUT=Path("/kaggle/working/fpga-fer2013-c6-gap2-kd-verbose-retry1")
+
+def c6_progress(stage,**kwargs):
+    """Structured durable logs + flushed print. Kaggle UI can buffer cell stdout."""
+    message={"stage":stage,"utc_time":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),**kwargs}
+    C6_OUT.mkdir(parents=True,exist_ok=True)
+    line=json.dumps(message,ensure_ascii=False,separators=(",",":"))
+    with (C6_OUT/"live-progress.jsonl").open("a",encoding="utf-8") as output:
+        output.write(line+"\n")
+        output.flush()
+    print("C6_PROGRESS "+line,flush=True)
+
 OUT=C6_OUT
 C6_SEEDS=(20261021,20261022)
 C6_MODES=("GAP2_CE_control","GAP2_C3_KD")
@@ -63,6 +74,7 @@ def c6_loss(logits,labels,weight,teacher_logits=None):
     return (1.0-C6_KD_WEIGHT)*ce+C6_KD_WEIGHT*kd
 
 def c6_train_one(mode,seed,baseline,teacher,root,train_rows,val_rows,device,weights):
+    c6_progress("VARIANT_START",mode=mode,seed=seed,max_epochs=C6_EPOCHS)
     c5_seed_all(seed)
     # BOTH are identical GAP2 networks initialized from the original C state.
     model,initial_diff=c5_make_model("GAP2_spatial",baseline,device)
@@ -78,10 +90,12 @@ def c6_train_one(mode,seed,baseline,teacher,root,train_rows,val_rows,device,weig
     best=None
     wait=0
     for epoch in range(1,C6_EPOCHS+1):
+        epoch_begin=time.monotonic()
+        c6_progress("EPOCH_START",mode=mode,seed=seed,epoch=epoch)
         model.train()
         total=0.0
         count=0
-        for x,y in data:
+        for batch_index,(x,y) in enumerate(data,1):
             x=x.to(device,non_blocking=True)
             y=y.to(device,non_blocking=True)
             opt.zero_grad(set_to_none=True)
@@ -97,9 +111,25 @@ def c6_train_one(mode,seed,baseline,teacher,root,train_rows,val_rows,device,weig
             opt.step()
             total+=float(loss.item())*len(y)
             count+=len(y)
+            if batch_index==1 or batch_index%25==0:
+                c6_progress("BATCH",mode=mode,seed=seed,epoch=epoch,
+                            batch=batch_index,batches_total=len(data),
+                            running_train_loss=round(total/max(count,1),6),
+                            elapsed_epoch_sec=round(time.monotonic()-epoch_begin,1))
+        c6_progress("VALIDATION_START",mode=mode,seed=seed,epoch=epoch,
+                    elapsed_epoch_sec=round(time.monotonic()-epoch_begin,1))
         val=validate(model,validation,device)
         pairs=c5_pair_errors(val["confusion_matrix"])
         scheduler.step(val["macro_f1"])
+        c6_progress("EPOCH_END",mode=mode,seed=seed,epoch=epoch,
+                    elapsed_epoch_sec=round(time.monotonic()-epoch_begin,1),
+                    train_loss=round(total/max(count,1),6),
+                    val_macro_f1=round(val["macro_f1"],6),
+                    val_accuracy=round(val["accuracy"],6),
+                    neutral_recall=round(val["recall"]["neutral"],6),
+                    sad_recall=round(val["recall"]["sad"],6),
+                    neutral_sad_pair_errors=pairs,
+                    confusion_matrix=val["confusion_matrix"])
         history.append({"epoch":epoch,"train_loss":total/count,
                         "val":val,"pair_errors":pairs})
         event("C6_EPOCH",mode=mode,seed=seed,epoch=epoch,
@@ -131,15 +161,22 @@ def c6_train_one(mode,seed,baseline,teacher,root,train_rows,val_rows,device,weig
     },indent=2,ensure_ascii=False)+"\n")
     event("C6_VARIANT_COMPLETE",mode=mode,seed=seed,selected_epoch=best["epoch"],
           f1=best["val"]["macro_f1"],pair_errors=best["pair_errors"])
+    c6_progress("VARIANT_END",mode=mode,seed=seed,selected_epoch=best["epoch"],
+                macro_f1=round(best["val"]["macro_f1"],6),
+                neutral_sad_pair_errors=best["pair_errors"])
     return best
 
 def run_c6():
+    c6_progress("START",mode="C6_VERBOSE_RETRY1",
+                description="GAP2 CE control versus C3 frozen teacher KD; two seeds")
     if not torch.cuda.is_available():
         raise RuntimeError("C6 actual Kaggle GPU required")
     torch.set_num_threads(4)
     device=torch.device("cuda")
     input_dir=Path("/kaggle/input")
+    c6_progress("DATASET_SCAN_START")
     root=find_dataset_root(Path("/kaggle/input/fer2013"))
+    c6_progress("DATASET_SCAN_DONE")
     matches=list(input_dir.rglob("c2026-baseline.pt"))
     if len(matches)!=1:
         raise RuntimeError("Frozen C2026 baseline checkpoint missing/ambiguous")
@@ -153,6 +190,7 @@ def run_c6():
         raise RuntimeError("Train/VAL manifest counts changed")
     if {r["sha256"] for r in rows}&{r["sha256"] for r in val_rows}:
         raise RuntimeError("Training / VAL exact hash leakage")
+    c6_progress("FROZEN_MANIFEST_OK",train_size=len(rows),val_size=len(val_rows))
     source=torch.load(matches[0],map_location="cpu",weights_only=False)
     if source.get("seed")!=2026 or list(source["class_names"])!=list(LABELS):
         raise RuntimeError("Wrong baseline")
@@ -162,11 +200,17 @@ def run_c6():
     origin_val=validate(baseline,loader(val_rows,root,False,0),device)
     if abs(origin_val["macro_f1"]-0.7470728599937523)>1e-5:
         raise RuntimeError("Frozen original C validation changed")
+    c6_progress("TEACHER_LOADING_START")
     teacher,tval,teacher_sha=c6_load_frozen_teacher(device)
+    c6_progress("TEACHER_LOADING_DONE",sha256=teacher_sha,
+                frozen_macro_f1=round(tval["macro_f1"],6))
+    c6_progress("TEACHER_PARITY_VALIDATION_START")
     # Training and validation preprocessing MUST match the frozen C3 teacher.
     current_teacher=validate(teacher,loader(val_rows,root,False,0),device)
     if abs(current_teacher["macro_f1"]-tval["macro_f1"])>1e-5:
         raise RuntimeError("Frozen C3 teacher validation parity failed")
+    c6_progress("TEACHER_PARITY_VALIDATION_DONE",
+                current_macro_f1=round(current_teacher["macro_f1"],6))
     if tval["macro_f1"]<0.78:
         raise RuntimeError("Wrong teacher quality")
     resources=theoretical_resources()
@@ -241,6 +285,11 @@ def run_c6():
     }
     OUT.mkdir(parents=True,exist_ok=True)
     (OUT/"results.json").write_text(json.dumps(result,indent=2,ensure_ascii=False)+"\n")
+    c6_progress("COMPLETE",robust_gate=robust,
+                ce_mean_macro_f1=round(ce["mean_macro_f1"],6),
+                kd_mean_macro_f1=round(kd["mean_macro_f1"],6),
+                ce_pair_errors=ce["mean_pair_errors"],
+                kd_pair_errors=kd["mean_pair_errors"])
     event("C6_COMPLETE",robust_improvement=robust,
           ce_mean_f1=ce["mean_macro_f1"],kd_mean_f1=kd["mean_macro_f1"],
           ce_mean_pair_errors=ce["mean_pair_errors"],
