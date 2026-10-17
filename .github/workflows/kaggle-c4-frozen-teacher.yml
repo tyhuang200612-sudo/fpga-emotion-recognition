@@ -1,0 +1,197 @@
+name: TinyCNN-C4 two-seed focused distillation from frozen C3 teacher
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c4-frozen-teacher.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c4-frozen-c3-teacher-GPU
+  cancel-in-progress: false
+
+jobs:
+  train-c4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      EXPERIMENT: tyhuanga/fpga-c4-balanced-knowledge-distill
+      TEACHER_DATASET: tyhuanga/fpga-c3-locked-teacher
+    steps:
+      - name: Checkout existing C/C2 and independent C4
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run C4 generator regression and build private notebook
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p test_c4_builder.py -v
+          python -m tools.build_kaggle_c4 --out build/kaggle_c4
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('build/kaggle_c4/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c4-balanced-knowledge-distill'
+          assert m['is_private'] and m['enable_gpu']
+          assert set(m['dataset_sources'])=={
+            'msambare/fer2013',
+            'tyhuanga/fpga-c2026-locked-baseline',
+            'tyhuanga/fpga-c3-locked-teacher'}
+          print('Frozen C4 student architecture and test-free validation verified.')
+          PY
+
+      - name: Download archived teacher from successful C3 (not a newly trained teacher)
+        uses: actions/download-artifact@v4
+        with:
+          name: TinyCNN-C3-PretrainedTeacher-CameraAug-ValidationOnly
+          run-id: 38999204120
+          github-token: ${{ github.token }}
+          path: c3-archive
+
+      - name: Verify original C3 teacher SHA256 and stage durable private Kaggle copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,shutil
+          source=list(Path('c3-archive').rglob('pretrained_teacher/best.pt'))
+          assert len(source)==1,source
+          digest=hashlib.sha256(source[0].read_bytes()).hexdigest()
+          expected='ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c'
+          assert digest==expected,(digest,expected)
+          root=Path('build/private-c3-teacher');root.mkdir(parents=True,exist_ok=True)
+          shutil.copyfile(source[0],root/'c3_teacher-best.pt')
+          report=list(Path('c3-archive').rglob('results.json'))
+          assert len(report)==1,report
+          r=json.loads(report[0].read_text())
+          assert r['teacher_qualified'] is True and r['test_evaluated'] is False
+          assert r['teacher_validation']['macro_f1']>.78
+          (root/'c3-teacher-verification.json').write_text(json.dumps({
+            'source_run':38999204120,'sha256':expected,
+            'validation_macro_f1':r['teacher_validation']['macro_f1'],
+            'training_only':True,'no_raw_face_images':True,
+          },indent=2))
+          (root/'dataset-metadata.json').write_text(json.dumps({
+            'id':'tyhuanga/fpga-c3-locked-teacher',
+            'title':'C3 locked training teacher weights',
+            'is_private':True,
+            'licenses':[{'name':'other'}]
+          },indent=2))
+          assert len(list(root.iterdir()))==3
+          print('C3 teacher ready for private cloud handoff; model SHA256:',digest)
+          PY
+
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Reuse or create private frozen teacher dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          if kaggle datasets files "$TEACHER_DATASET" >/tmp/existing_c3_teacher.txt 2>&1; then
+            echo 'Existing Kaggle private C3 teacher archive found; verifying exact SHA256 later inside GPU.'
+            cat /tmp/existing_c3_teacher.txt
+          else
+            kaggle datasets create -p build/private-c3-teacher
+          fi
+
+      - name: Verify no already-running C4 notebook will be overwritten
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=$(kaggle kernels status "$EXPERIMENT" 2>&1 || true)
+          echo "$status"
+          if echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
+            echo "::error::C4 already in progress; no duplicated GPU run"; exit 1
+          fi
+
+      - name: Submit C4 private Kaggle T4 GPU run
+        run: kaggle kernels push -p build/kaggle_c4 --accelerator NvidiaTeslaT4
+
+      - name: Verify actual private C4 notebook GPU and dataset attachments
+        shell: bash
+        run: |
+          mkdir -p build/remote-c4
+          kaggle kernels pull "$EXPERIMENT" -p build/remote-c4 -m
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          d=json.loads(Path('build/remote-c4/kernel-metadata.json').read_text())
+          assert d['id']=='tyhuanga/fpga-c4-balanced-knowledge-distill'
+          assert d['enable_gpu'] is True and d['is_private'] is True
+          assert set(d['dataset_sources'])=={
+             'msambare/fer2013',
+             'tyhuanga/fpga-c2026-locked-baseline',
+             'tyhuanga/fpga-c3-locked-teacher'}
+          print('C4 private Kaggle checkpoint inputs correctly attached.')
+          PY
+
+      - name: Monitor C4 run without restarting or using independent TEST
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 440); do
+            status=$(kaggle kernels status "$EXPERIMENT" 2>&1)
+            echo "C4 GPU status $i: $status"
+            if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then exit 0; fi
+            if echo "$status" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+               echo "::error::C4 failed remotely; inspect Kaggle logs before retry"; exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::C4 monitoring timed out; no forced restart"; exit 1
+
+      - name: Retrieve actual C4 metrics and verify 4 student checkpoints
+        shell: bash
+        run: |
+          mkdir -p c4-archive
+          kaggle kernels output "$EXPERIMENT" -p c4-archive
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          found=list(Path('c4-archive').rglob('results.json'))
+          assert len(found)==1,found
+          folder=found[0].parent
+          result=json.loads(found[0].read_text())
+          assert result['architecture']=='TinyCNN-C 16/32/64/64 UNCHANGED'
+          assert not result['test_evaluated'] and not result['phone_camera_evaluated']
+          assert result['no_automatic_relabeling'] and result['no_deployment']
+          assert result['student_seeds']==[20261019,20261020]
+          assert set(result['variants'])=={'C4_pairwise','C4_margin'}
+          for mode in result['variants']:
+            for seed in (20261019,20261020):
+              ck=folder/mode/f'seed_{seed}'/'best.pt'
+              assert ck.is_file() and ck.stat().st_size>100000,ck
+          print('Real C4 2-seed VAL-only scores:',json.dumps({
+            name:{'mean_macro_f1':d['mean_macro_f1'],
+                  'mean_pair_errors':d['mean_pair_errors'],
+                  'robust_gate':d['all_seeds_pass_robust_improvement']}
+             for name,d in result['variants'].items()},ensure_ascii=False,indent=2))
+          print('C4 final validation gate:',result['robust_winner_by_validation'])
+          PY
+
+      - name: Archive C4 reproducible checkpoints and logs for handoff
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C4-Frozen-C3-Teacher-Two-Seed-ValidationOnly
+          path: c4-archive/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Collect failure log only; no auto retry
+        if: failure()
+        shell: bash
+        run: kaggle kernels logs "$EXPERIMENT" || true
