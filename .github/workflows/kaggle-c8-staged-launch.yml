@@ -6,11 +6,12 @@ on:
     paths:
       - '.github/workflows/kaggle-c8-staged-launch.yml'
   schedule:
-    - cron: '11 */2 * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: fpga-c8-one-private-kaggle-submit
@@ -58,11 +59,17 @@ jobs:
           fi
           new=$(kaggle kernels status "$NEW_KERNEL" 2>&1 || true)
           echo "New C8: $new"
-          if echo "$new" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED|COMPLETE)'; then
+          if echo "$new" | grep -q 'KernelWorkerStatus.COMPLETE'; then
             echo "safe_to_launch=false" >>"$GITHUB_OUTPUT"
-            echo "::notice::C8 already started or completed; do not overwrite or duplicate."
+            echo "archive_ready=true" >>"$GITHUB_OUTPUT"
+            echo "::notice::C8 has completed; validate real outputs and archive once."
+            exit 0
+          fi
+          if echo "$new" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED)'; then
+            echo "safe_to_launch=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::C8 already running; no new GPU, no long waiting."
             echo "### Already launched" >>"$GITHUB_STEP_SUMMARY"
-            echo "C8 already has a running or complete Kaggle job. No new GPU submitted." >>"$GITHUB_STEP_SUMMARY"
+            echo "C8 is running. Check the Kaggle notebook for completed stage cells." >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if echo "$new" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
@@ -123,3 +130,77 @@ jobs:
             echo "::error::Immediate remote GPU error"
             exit 1
           fi
+
+      - name: Skip re-archiving if previously verified C8 artifact exists
+        id: archived
+        if: steps.gate.outputs.archive_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only checks this repository's already authenticated artifact list.
+          count=$(gh api '/repos/tyhuang200612-sudo/fpga-emotion-recognition/actions/artifacts?name=TinyCNN-C8-Staged-GAP2-CE-vs-KD-Fixed25-Logs&per_page=100' --jq '.total_count')
+          if test "${count:-0}" -gt 0; then
+            echo "archive_needed=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::C8 complete and already archived. No duplicates."
+          else
+            echo "archive_needed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Download real finished C8 outputs and validate all 100 epochs
+        if: steps.gate.outputs.archive_ready == 'true' && steps.archived.outputs.archive_needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p c8-final
+          kaggle kernels output "$NEW_KERNEL" -p c8-final
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roots=list(Path('c8-final').rglob('results.json'))
+          assert len(roots)==1,roots
+          root=roots[0].parent
+          r=json.loads(roots[0].read_text())
+          assert r['student_seeds']==[20261021,20261022]
+          assert r['train_val_count']==[13571,2979]
+          assert r['quality_policy']=='fer2013-three-class-safe-pixel-dedup-v1'
+          assert r['teacher_checkpoint_sha256']=='ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c'
+          assert r['all_four_runs_completed_25_epochs'] and r['all_epochs_total']==100
+          assert r['stage_cells_per_model']==5
+          assert not r['test_evaluated'] and not r['phone_camera_evaluated'] and r['no_deployment']
+          assert not r['int8_fpga_verified']
+          for mode in ('GAP2_CE_control','GAP2_C3_KD'):
+            for seed in (20261021,20261022):
+              folder=root/mode/('seed_'+str(seed))
+              assert (folder/'best.pt').stat().st_size>100000
+              hist=json.loads((folder/'history.json').read_text())['epochs']
+              assert len(hist)==25 and hist[-1]['epoch']==25
+              for stage in range(1,6):
+                assert (folder/f'stage_{stage:02d}.pt').stat().st_size>100000
+          logs=(root/'live-progress.jsonl').read_text()
+          assert logs.count('"stage":"C8_EPOCH_END"')==100
+          assert logs.count('"stage":"C8_STAGE_DONE"')==20
+          assert logs.count('"stage":"C8_VARIANT_DONE"')==4
+          assert logs.count('"stage":"C8_COMPLETE"')==1
+          print('VERIFIED C8 100 epoch logs and 4 weights:',json.dumps({
+            k:{'mean_macro_f1':v['mean_macro_f1'],
+               'mean_pair_errors':v['mean_pair_errors'],
+               'per_seed':{
+                  seed:{'macro_f1':d['validation']['macro_f1'],
+                        'neutral_recall':d['validation']['recall']['neutral'],
+                        'sad_recall':d['validation']['recall']['sad'],
+                        'pair_errors':d['pair_errors']}
+                  for seed,d in v['per_seed'].items()}}
+            for k,v in r['variants'].items()},indent=2))
+          print('Robust upgrade gate:',r['robust_improvement_gate'])
+          PY
+
+      - name: Archive proven C8 stage logs, per-epoch metrics, and four checkpoint files
+        if: steps.gate.outputs.archive_ready == 'true' && steps.archived.outputs.archive_needed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C8-Staged-GAP2-CE-vs-KD-Fixed25-Logs
+          path: c8-final/
+          if-no-files-found: error
+          retention-days: 30
