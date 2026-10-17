@@ -47,12 +47,25 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m unittest discover -s tests -p test_c8_stepwise.py -v
           python -m tools.build_kaggle_c8 --out build/kaggle_c8
-      - name: Save C8 PRIVATE notebook without running GPU
+      - name: Feature-detect no-run support; never accidentally start GPU
         if: steps.status.outputs.already_exists == 'false'
         shell: bash
         run: |
           set -euo pipefail
-          kaggle kernels push -p build/kaggle_c8 --no-run
-          echo "### C8 preview published without GPU run" >>"$GITHUB_STEP_SUMMARY"
-          echo "Notebook: https://www.kaggle.com/code/tyhuanga/fpga-c8-stepwise-log-epochs" >>"$GITHUB_STEP_SUMMARY"
-          echo "Full GPU training is a separate controlled launch AFTER C7 stops." >>"$GITHUB_STEP_SUMMARY"
+          if kaggle kernels push --help 2>&1 | grep -q -- '--no-run'; then
+            kaggle kernels push -p build/kaggle_c8 --no-run
+            echo "### C8 privately published without GPU run" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::Installed Kaggle CLI does not support --no-run. Safely skip Kaggle publish; no GPU started."
+            echo "### Kaggle no-run unsupported; C8 source attached only" >>"$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Full GPU training will be launched only after the old C7 stops." >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload prepared stage-separated C8 Notebook without GPU execution
+        if: steps.status.outputs.already_exists == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: C8-Staged-37-Cell-Kaggle-Notebook-Source
+          path: build/kaggle_c8/
+          retention-days: 30
+          if-no-files-found: error
