@@ -1,0 +1,143 @@
+name: Back up complete private C2 and C3 handoff archives on Kaggle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/archive-fpga-handoff.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c2-c3-durable-handoff
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      HANDOFF_DATASET: tyhuanga/fpga-emotion-handoff-c2-c3
+    steps:
+      - name: Check out handoff manifest
+        uses: actions/checkout@v4
+      - name: Retrieve real C2 checkpoints and reports
+        uses: actions/download-artifact@v4
+        with:
+          name: TinyCNN-C2-FrozenStructure-Three-Validation-Experiments
+          run-id: 38995638992
+          github-token: ${{ github.token }}
+          path: handoff/c2
+      - name: Retrieve real C3 teacher, students and reports
+        uses: actions/download-artifact@v4
+        with:
+          name: TinyCNN-C3-PretrainedTeacher-CameraAug-ValidationOnly
+          run-id: 38999204120
+          github-token: ${{ github.token }}
+          path: handoff/c3
+      - name: Verify complete training artifacts and create a private handoff ZIP
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile,ZIP_DEFLATED
+          import hashlib,json
+          root=Path('handoff')
+          report_c2=list((root/'c2').rglob('results.json'))
+          report_c3=list((root/'c3').rglob('results.json'))
+          assert len(report_c2)==1 and len(report_c3)==1,(report_c2,report_c3)
+          c2=json.loads(report_c2[0].read_text())
+          c3=json.loads(report_c3[0].read_text())
+          assert c2['test_evaluated'] is False and c3['test_evaluated'] is False
+          assert set(c2['validation'])=={'baseline','A_hard_sampler','B_focal','C_distilled'}
+          assert c3['teacher_qualified'] is True
+          assert c2['architecture']=='TinyCNN-C 16/32/64/64 UNCHANGED'
+          assert c3['architecture']=='TinyCNN-C 16/32/64/64 UNCHANGED'
+          c2base=report_c2[0].parent
+          c3base=report_c3[0].parent
+          for v in ('A_hard_sampler','B_focal','C_distilled','teacher'):
+            p=c2base/v/'best.pt'
+            assert p.is_file() and p.stat().st_size>100000,p
+          for v in ('C3_camera_aug','C3_pretrained_KD','pretrained_teacher'):
+            p=c3base/v/'best.pt'
+            assert p.is_file() and p.stat().st_size>100000,p
+          teacher=(c3base/'pretrained_teacher'/'best.pt')
+          teacher_sha=hashlib.sha256(teacher.read_bytes()).hexdigest()
+          assert teacher_sha=='ce455ee8060e19d87be16d50926c881b672d172c2ea260bf0ad5e01572861b0c'
+          all_files=sorted([x for x in root.rglob('*') if x.is_file()])
+          assert not any('test.csv' in str(f).lower() or
+                         f.suffix.lower() in {'.png','.jpg','.jpeg','.webp'}
+                         for f in all_files), "Raw faces or test manifest forbidden"
+          target=Path('build/fpga-emotion-handoff-c2-c3');target.mkdir(parents=True,exist_ok=True)
+          zipped=target/'fpga-c2-c3-complete-handoff.zip'
+          with ZipFile(zipped,'w',compression=ZIP_DEFLATED,compresslevel=6) as archive:
+            for f in all_files:
+              archive.write(f,f.relative_to(root))
+            archive.write('docs/experiment-handoff-index.md','experiment-handoff-index.md')
+          sha=hashlib.sha256(zipped.read_bytes()).hexdigest()
+          manifest={
+            'name':'fpga-emotion C2+C3 complete private handoff',
+            'archive_name':zipped.name,
+            'archive_sha256':sha,
+            'archived_c2_action_run':38995638992,
+            'archived_c3_action_run':38999204120,
+            'c3_teacher_sha256':teacher_sha,
+            'contents_count':len(all_files)+1,
+            'no_face_photos':True,'no_test.csv':True,
+            'baseline_remains_frozen':True,
+            'c2_validation_only':True,'c3_validation_only':True,
+            'student_channels':[16,32,64,64],
+            'restoration':'Download this Kaggle private dataset, unzip the archive, verify SHA256, then open experiment-handoff-index.md',
+          }
+          (target/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+          (target/'dataset-metadata.json').write_text(json.dumps({
+            'id':'tyhuanga/fpga-emotion-handoff-c2-c3',
+            'title':'FPGA Emotion C2 C3 private handoff',
+            'is_private':True,
+            'licenses':[{'name':'other'}]},indent=2))
+          print('PRIVATE HANDOFF VERIFIED:',json.dumps(manifest,ensure_ascii=False,indent=2),flush=True)
+          PY
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Create private handoff backup without replacing anything existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          if kaggle datasets files "$HANDOFF_DATASET" >/tmp/handoff_existing.txt 2>&1; then
+            echo 'Existing private handoff dataset found. No overwrite.'
+            cat /tmp/handoff_existing.txt
+          else
+            kaggle datasets create -p build/fpga-emotion-handoff-c2-c3
+          fi
+      - name: Check durable private dataset actually lists the handoff ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for n in $(seq 1 45); do
+            if kaggle datasets files "$HANDOFF_DATASET" >/tmp/handoff_files.txt 2>&1; then
+              if grep -q 'fpga-c2-c3-complete-handoff.zip' /tmp/handoff_files.txt; then
+                ready=1
+                cat /tmp/handoff_files.txt
+                break
+              fi
+            fi
+            echo "Waiting for Kaggle private handoff to index: $n"
+            sleep 12
+          done
+          if test "$ready" -ne 1;then
+            echo "::error::Private handoff dataset not verifiably available"
+            exit 1
+          fi
+      - name: Archive checksum manifest for quick retrieval
+        uses: actions/upload-artifact@v4
+        with:
+          name: FPGA-C2-C3-Handoff-Manifest-SHA256
+          path: build/fpga-emotion-handoff-c2-c3/manifest.json
+          retention-days: 30
+          if-no-files-found: error
