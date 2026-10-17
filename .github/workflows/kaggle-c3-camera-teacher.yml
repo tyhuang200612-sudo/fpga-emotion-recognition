@@ -1,0 +1,131 @@
+name: TinyCNN-C3 camera augmentation and pretrained teacher (validation only)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c3-camera-teacher.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c3-locked-experiment
+  cancel-in-progress: false
+
+jobs:
+  c3-train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      EXPERIMENT: tyhuanga/fpga-c3-camera-domain-teacher
+    steps:
+      - name: Checkout frozen C architecture and C3 code
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify C3 notebook generation compiles and is private
+        run: |
+          python -m unittest discover -s tests -p 'test_c3_builder.py' -v
+          python -m tools.build_kaggle_c3 --out build/kaggle_c3
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('build/kaggle_c3/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c3-camera-domain-teacher'
+          assert m['enable_gpu'] and m['enable_internet'] and m['is_private']
+          assert set(m['dataset_sources'])=={'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline'}
+          nb=json.loads(Path('build/kaggle_c3/'+m['code_file']).read_text())
+          src=''.join(nb['cells'][6]['source'])
+          assert 'run_c3' in src and 'C3_camera_aug' in src
+          assert 'train_pretrained_teacher' in src
+          assert 'test_evaluated' in src
+          print('C3 preflight verified; TEST never mounted by training code',flush=True)
+          PY
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Confirm API access and prevent a duplicate C3 GPU run
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          status=$(kaggle kernels status "$EXPERIMENT" 2>&1 || true)
+          echo "$status"
+          if echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|PENDING|QUEUED|CANCEL_REQUESTED)'; then
+            echo "::error::C3 is already running; do not overwrite"; exit 1
+          fi
+      - name: Launch fresh private Kaggle C3 GPU training
+        run: kaggle kernels push -p build/kaggle_c3 --accelerator NvidiaTeslaT4
+      - name: Verify saved Kaggle C3 metadata
+        shell: bash
+        run: |
+          mkdir -p build/remote-c3
+          kaggle kernels pull "$EXPERIMENT" -p build/remote-c3 -m
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('build/remote-c3/kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-c3-camera-domain-teacher'
+          assert m['enable_gpu'] and m['is_private']
+          assert set(m['dataset_sources'])=={'msambare/fer2013','tyhuanga/fpga-c2026-locked-baseline'}
+          print('Actual private dataset and GPU attachments verified',flush=True)
+          PY
+      - name: Monitor this exact run to completion without restarting
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 260); do
+            status=$(kaggle kernels status "$EXPERIMENT" 2>&1)
+            echo "C3 Kaggle GPU status $n: $status"
+            if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then exit 0; fi
+            if echo "$status" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+              echo "::error::C3 GPU stopped; inspect Kaggle logs, never pretend success"; exit 1
+            fi
+            sleep 40
+          done
+          echo "::error::C3 status timeout; do not automatically retrain"; exit 1
+      - name: Download and verify C3 validation and student checkpoints
+        shell: bash
+        run: |
+          mkdir -p c3-outputs
+          kaggle kernels output "$EXPERIMENT" -p c3-outputs
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          reports=list(Path('c3-outputs').rglob('results.json'))
+          assert len(reports)==1,reports
+          p=reports[0].parent
+          r=json.loads(reports[0].read_text())
+          assert r['architecture']=='TinyCNN-C 16/32/64/64 UNCHANGED'
+          assert r['test_evaluated'] is False and r['second_seed_required']
+          assert r['no_automatic_relabeling']
+          assert r['quality_policy']=='fer2013-three-class-safe-pixel-dedup-v1'
+          assert (p/'C3_camera_aug'/'best.pt').is_file()
+          if r['teacher_qualified']:
+            assert (p/'pretrained_teacher'/'best.pt').is_file()
+            assert (p/'C3_pretrained_KD'/'best.pt').is_file()
+          else:
+            assert 'C3_pretrained_KD' not in r['validation']
+          print('C3 VAL ONLY:',json.dumps({k:{
+            'accuracy':v['accuracy'],'macro_f1':v['macro_f1'],
+            'neutral_recall':v['recall']['neutral'],
+            'sad_recall':v['recall']['sad']}
+            for k,v in r['validation'].items()},indent=2),flush=True)
+          print('Teacher accepted:',r['teacher_qualified'],
+                'C3 preliminary winner:',r['winner_by_validation'],flush=True)
+          PY
+      - name: Archive C3 private validation-only experiments
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C3-PretrainedTeacher-CameraAug-ValidationOnly
+          path: c3-outputs/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Show Kaggle failure logs without rerunning GPU
+        if: failure()
+        run: kaggle kernels logs "$EXPERIMENT" || true
