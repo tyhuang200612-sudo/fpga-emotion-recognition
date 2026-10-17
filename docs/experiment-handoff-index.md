@@ -104,3 +104,14 @@
 - 日志节点包括 START、数据集扫描、冻结教师校验、EPOCH_START、每25批一次BATCH、VALIDATION_START、EPOCH_END（包含train loss、accuracy、macro F1、中性/悲伤召回率、完整混淆矩阵）、VARIANT_END、COMPLETE，并在异常时打印 traceback。
 - 工作流每40秒读取 Kaggle 任务状态，每4轮尝试通过 `kaggle kernels logs` 提取 C6_PROGRESS；**Kaggle在运行中的长代码单元可能推迟向网页/API提供stdout，不保证实时显示**。任务完成后 `live-progress.jsonl`、`progress.jsonl`、`history.json`、`results.json` 与4个 `best.pt` 才是可复核证据。新run启动检查全部通过并已推送GPU Notebook，但记录创建时 **GPU尚未返回正式C6质量报告**。
 - 保持原有独立TEST及手机人脸诊断样本隔离，不自动改标签、不部署Android和安路FPGA、不声称C6质量提升。
+
+
+## C6 日志增强重训已完成（2026-10-17）
+
+- **最终状态：GitHub Actions [#39008401226](https://github.com/tyhuang200612-sudo/fpga-emotion-recognition/actions/runs/39008401226) Success**；独立私有 Kaggle `tyhuanga/fpga-c6-gap2-kd-verbose-retry1`。
+- 真实成绩与逐seed混淆矩阵：[C6 最终完整验证报告](c6-final-verified-results-2026-10-17.md)。
+- 模型归档 GitHub Artifact `TinyCNN-C6-Verbose-Retry1-GAP2-CE-vs-C3KD-TwoSeeds`（ID `12091822756`），下载归档ZIP文件 `C6-verbose-validated-GAP2-CE-vs-C3KD.zip`，**SHA256 `1e3d042a15c4980bb65675cd6cd515ad957fd70384353b52a7ef3a816015d241`**。
+- 数据完整：4份最佳 `best.pt`，4份 `history.json`，1份 `results.json`、结构化 `live-progress.jsonl`（809条，其中66个`EPOCH_END`、594个`BATCH`）、`progress.jsonl`和Kaggle运行日志。
+- C6-C3KD双seed Macro-F1 **74.9325%**、中性↔悲伤混淆平均 **401**，对应同期GAP2-CE双seed **74.4751%**、混淆平均 **412.5**；虽然蒸馏平均提升 **0.4574 个百分点**、混淆少 **11.5**，但**没有超过历史 C2-C 75.1586% 的F1，两个seed均未通过可靠升级门槛**（`robust_improvement_gate=false`）。
+- 原用户手机19张近重复悲伤图没有用于训练或本实验验证。独立 TEST 未触碰。尚无手机/FPGA INT8部署。保留原C2-C为现役。
+- **注意**：同设置同期CE与历史C5 GAP2分数不同，表明随机数控制/复现性等还有待审计；不能宣称蒸馏效果在独立实验中稳定。
