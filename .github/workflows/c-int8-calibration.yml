@@ -86,7 +86,7 @@ jobs:
             --checkpoint trained-c/fpga-fer2013-c-quality-v1/seed_2026/best.pt \
             --dataset-root "$root" \
             --manifests trained-c/fpga-fer2013-c-quality-v1/quality-v1 \
-            --cal-count 256 --val-count 128 --golden-count 12 \
+            --cal-count 256 --val-count 2979 --golden-count 20 \
             --out build/c2026-ptq-int8
           python - <<'PY'
           from pathlib import Path
