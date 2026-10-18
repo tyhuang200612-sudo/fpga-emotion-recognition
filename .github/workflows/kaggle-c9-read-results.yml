@@ -1,0 +1,141 @@
+name: "C9 read-only Kaggle status and verified result archive"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c9-read-results.yml'
+  schedule:
+    - cron: '17 0,6,12,18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-c9-verified-download-once
+  cancel-in-progress: false
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      TARGET: tyhuanga/fpga-c9-neutral-sad-pair-vs-ce
+      ARCHIVE_NAME: TinyCNN-C9-NeutralSad-CE-vs-PairMargin-TwoSeeds-100Epochs
+    steps:
+      - name: Python 3.11 for Kaggle API
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Check Kaggle directly - never start or restart GPU
+        id: query
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          status=$(kaggle kernels status "$TARGET" 2>&1 || true)
+          echo "C9_KAGGLE_STATE=$status"
+          echo "### C9 real Kaggle status" >>"$GITHUB_STEP_SUMMARY"
+          echo "$status" >>"$GITHUB_STEP_SUMMARY"
+          if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+            echo "complete=true" >>"$GITHUB_OUTPUT"
+          elif echo "$status" | grep -q 'KernelWorkerStatus.ERROR'; then
+            echo "### C9 Kaggle ERROR; no model will be promoted" >>"$GITHUB_STEP_SUMMARY"
+            echo "Error logs excerpt:" >>"$GITHUB_STEP_SUMMARY"
+            kaggle kernels logs "$TARGET" >/tmp/c9-error.log 2>&1 || true
+            tail -25 /tmp/c9-error.log
+            echo "C9_REMOTE_LOG_BYTES=$(wc -c </tmp/c9-error.log)"
+            echo "complete=false" >>"$GITHUB_OUTPUT"
+          elif echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING)'; then
+            echo "Still queued or running, no result to archive." >>"$GITHUB_STEP_SUMMARY"
+            kaggle kernels logs "$TARGET" >/tmp/c9-running.log 2>&1 || true
+            echo "C9_REMOTE_LOG_BYTES=$(wc -c </tmp/c9-running.log)"
+            echo "C9_EXPOSED_EPOCH_LOGS=$(grep -c 'EPOCH_END' /tmp/c9-running.log || true)"
+            echo "complete=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "::warning::Unknown Kaggle status; no GPU changes or model claims."
+            echo "complete=false" >>"$GITHUB_OUTPUT"
+          fi
+          echo "READ-ONLY: no GPU push, cancellation, new dataset or key exposure."
+
+      - name: Detect existing successfully archived result
+        if: steps.query.outputs.complete == 'true'
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(gh api '/repos/tyhuang200612-sudo/fpga-emotion-recognition/actions/artifacts?per_page=100' --jq ".artifacts[] | select(.name == \"$ARCHIVE_NAME\" and (.expired == false)) | .id" | head -1)
+          if test -n "$existing"; then
+            echo "::notice::C9 already archived as artifact $existing"
+            echo "need_archive=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "need_archive=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and rigorously verify all original C9 model checkpoints
+        if: steps.query.outputs.complete == 'true' && steps.existing.outputs.need_archive == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p c9-finished
+          kaggle kernels output "$TARGET" -p c9-finished
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roots=list(Path("c9-finished").rglob("results.json"))
+          if len(roots)!=1:
+              raise RuntimeError(f"C9 exactly one results.json required; got {len(roots)}")
+          root=roots[0].parent
+          result=json.loads(roots[0].read_text())
+          assert result["all_100_epochs_completed"] is True
+          assert result["stages_completed"]==20
+          assert result["train_size"]==13571
+          assert result["val_size"]==2979
+          assert result["quality_policy"]=="fer2013-three-class-safe-pixel-dedup-v1"
+          assert result["architecture"]=="TinyCNNC GAP1 16/32/64/64"
+          assert result["variants"].keys()=={"CE_CONTROL","PAIR_MARGIN"}
+          assert result["seeds"]==[20261021,20261022]
+          assert result["test_evaluated"] is False
+          assert result["phone_camera_evaluated"] is False
+          assert result["int8_verified"] is False
+          assert result["fpga_verified"] is False
+          for mode in ("CE_CONTROL","PAIR_MARGIN"):
+              for seed in (20261021,20261022):
+                  folder=root/mode/f"seed_{seed}"
+                  best=folder/"best.pt"
+                  assert best.is_file() and best.stat().st_size>100000
+                  history=json.loads((folder/"history.json").read_text())["epochs"]
+                  assert len(history)==25
+                  assert [row["epoch"] for row in history]==list(range(1,26))
+                  for stage in range(1,6):
+                      cp=folder/f"stage_{stage:02d}.pt"
+                      assert cp.is_file() and cp.stat().st_size>100000
+          logs=[json.loads(s) for s in (root/"live-progress.jsonl").read_text().splitlines() if s.strip()]
+          counts={kind:sum(row.get("stage")==kind for row in logs)
+                  for kind in ("EPOCH_END","STAGE_END","VARIANT_END","COMPLETE")}
+          assert counts=={"EPOCH_END":100,"STAGE_END":20,"VARIANT_END":4,"COMPLETE":1},counts
+          print("VERIFIED C9 four weights, each 25 epochs, 20 durable stages, frozen TRAIN/VAL",counts)
+          print("C9 actual validation report:",json.dumps({
+              k:{"mean_macro_f1":v["mean_macro_f1"],
+                 "mean_pair_errors":v["mean_pair_errors"],
+                 "min_neutral_recall":v["min_neutral_recall"],
+                 "min_sad_recall":v["min_sad_recall"]}
+              for k,v in result["variants"].items()
+          },ensure_ascii=False,indent=2))
+          print("C9 upgrade gate passed:",result["pre_registered_upgrade_gate"])
+          PY
+
+      - name: Archive true C9 model weights and metric histories
+        if: steps.query.outputs.complete == 'true' && steps.existing.outputs.need_archive == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyCNN-C9-NeutralSad-CE-vs-PairMargin-TwoSeeds-100Epochs
+          path: c9-finished/
+          if-no-files-found: error
+          retention-days: 30
