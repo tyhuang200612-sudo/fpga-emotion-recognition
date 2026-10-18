@@ -1,0 +1,106 @@
+name: "C9: neutral/sad paired-loss private Kaggle GPU launch"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-c9-launch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpga-c9-neutral-sad-once
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      C9_KERNEL: tyhuanga/fpga-c9-neutral-sad-pair-vs-ce
+      C8R1_KERNEL: tyhuanga/fpga-c8r1-fixedpool-stage-logs
+    steps:
+      - name: Check out frozen auditable code
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install authenticated Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Check C8R1 stopped and prevent duplicate C9 GPU training
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          old=$(kaggle kernels status "$C8R1_KERNEL" 2>&1 || true)
+          echo "Prior C8R1: $old"
+          if ! echo "$old" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED|COMPLETE)'; then
+            echo "::error::Cannot verify C8R1 has stopped; do not start duplicate GPU."
+            exit 1
+          fi
+          current=$(kaggle kernels status "$C9_KERNEL" 2>&1 || true)
+          echo "C9 prior status: $current"
+          if echo "$current" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|COMPLETE|CANCEL_REQUESTED)'; then
+            echo "::notice::C9 already submitted, duplicate GPU forbidden."
+            echo "launch=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo "$current" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::Existing C9 is terminal failure. Diagnose first; do not auto-restart."
+            exit 1
+          fi
+          if ! echo "$current" | grep -Eqi 'not found|404|does not exist|Kernel not found|No kernels|Cannot access kernel.*Permission.*kernels.get.*was denied'; then
+            echo "::error::Unknown C9 Kaggle state. Abort unsafe duplicate submission."
+            exit 1
+          fi
+          echo "launch=true" >>"$GITHUB_OUTPUT"
+
+      - name: Validate C9 train-only margin and exact model architecture on CPU
+        if: steps.guard.outputs.launch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m unittest discover -s tests -p 'test_c9_pair_focus.py' -v
+          python -m tools.build_kaggle_c9 --out build/kaggle_c9
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out=Path("build/kaggle_c9")
+          metadata=json.loads((out/"kernel-metadata.json").read_text())
+          assert metadata["id"]=="tyhuanga/fpga-c9-neutral-sad-pair-vs-ce"
+          assert metadata["is_private"] and metadata["enable_gpu"]
+          assert metadata["dataset_sources"]==["msambare/fer2013","tyhuanga/fpga-c2026-locked-baseline"]
+          nb=json.loads((out/metadata["code_file"]).read_text())
+          assert len(nb["cells"])==37
+          assert sum("c9_epochs(5)" in "".join(x["source"]) for x in nb["cells"])==20
+          print("C9 checked, no GPU launch until this line",flush=True)
+          PY
+
+      - name: Verify private frozen baseline source exists
+        if: steps.guard.outputs.launch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle datasets files tyhuanga/fpga-c2026-locked-baseline | tee /tmp/c9-baseline.txt
+          grep -q 'c2026-baseline.pt' /tmp/c9-baseline.txt
+
+      - name: Submit exactly one PRIVATE Kaggle T4 C9 experiment
+        if: steps.guard.outputs.launch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p build/kaggle_c9 --accelerator NvidiaTeslaT4
+          echo "C9 post-submit live status:"
+          kaggle kernels status "$C9_KERNEL"
+          echo "### C9 GPU job submitted to Kaggle (no result claimed)" >>"$GITHUB_STEP_SUMMARY"
+          echo "Notebook: https://www.kaggle.com/code/tyhuanga/fpga-c9-neutral-sad-pair-vs-ce" >>"$GITHUB_STEP_SUMMARY"
+          echo "Same-size TinyCNN-C, 2 modes x 2 seeds x 25 Epoch; 20 five-Epoch cells." >>"$GITHUB_STEP_SUMMARY"
