@@ -41,6 +41,35 @@ class ATrainingTests(unittest.TestCase):
             self.assertNotIn('"sad":',traincode)
             self.assertNotIn("c2026-baseline.pt",traincode)
 
+    def test_stage_end_log_name_is_not_overwritten_by_stage_number(self):
+        import json
+        import tools.train_model_a as trainer
+        with tempfile.TemporaryDirectory() as temp:
+            previous=trainer.A_OUTPUT
+            try:
+                trainer.A_OUTPUT=Path(temp)
+                trainer.a_log("STAGE_END",seed=20261021,epoch=5,
+                              stage_index=1,cumulative_epochs=5,stopped_early=False)
+                logs=(Path(temp)/"live-progress.jsonl").read_text().splitlines()
+                self.assertEqual(len(logs),1)
+                row=json.loads(logs[0])
+                self.assertEqual(row["stage"],"STAGE_END")
+                self.assertEqual(row["stage_index"],1)
+                self.assertEqual(row["epoch"],5)
+            finally:
+                trainer.A_OUTPUT=previous
+
+    def test_all_stage_logging_calls_do_not_duplicate_function_stage_parameter(self):
+        import ast
+        source=Path("tools/train_model_a.py").read_text()
+        tree=ast.parse(source)
+        calls=[node for node in ast.walk(tree)
+               if isinstance(node,ast.Call) and
+               isinstance(node.func,ast.Name) and node.func.id=="a_log"]
+        self.assertGreaterEqual(len(calls),8)
+        for call in calls:
+            self.assertNotIn("stage",[kw.arg for kw in call.keywords])
+
     def test_twelve_stagnant_epochs_trigger_early_stop_and_significant_improvement_resets(self):
         from tools.train_model_a import (
             a_early_stop_update,A_EARLY_STOP_PATIENCE,A_EARLY_STOP_MIN_DELTA)
