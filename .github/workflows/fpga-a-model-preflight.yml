@@ -20,6 +20,7 @@ jobs:
         run: |
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install pillow numpy scikit-learn
+      # Recheck revised A max80 x2 early-stop12 backend and full 32-cell Notebook.
       - name: Validate new Model A architecture, realtime HTTPS telemetry and all stage syntax
         run: |
           set -euo pipefail
