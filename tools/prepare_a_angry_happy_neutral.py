@@ -30,6 +30,21 @@ IMAGE_EXTENSIONS={".jpg",".jpeg",".png",".bmp",".webp"}
 POLICY="fer2013-A-angry-happy-neutral-pixel-audit-v1"
 FIELDS=("path","label","label_id","sha256","width","height","pixel_sha256")
 
+def a_audit_progress(output_dir:Path,event:str,**values):
+    """Durable local progress and optional numeric-only real-time channel."""
+    import time
+    output_dir.mkdir(parents=True,exist_ok=True)
+    payload={"event":event,"timestamp":time.time(),**values}
+    with (output_dir/"audit-progress.jsonl").open("a",encoding="utf-8") as fp:
+        fp.write(json.dumps(payload,ensure_ascii=False,separators=(",",":"))+"\n")
+        fp.flush()
+    print("A_AUDIT_PROGRESS "+json.dumps(payload,ensure_ascii=False),flush=True)
+    reporter=globals().get("a_live_emit")
+    if callable(reporter):
+        reporter(event,**values)
+
+
+
 def a_find_root(preferred:Path)->Path:
     bases=[preferred,Path("/kaggle/input")]
     candidates={}
@@ -96,28 +111,47 @@ def prepare_a(input_root:Path,output_dir:Path,seed:int=2026,val_fraction:float=.
     broken=[]
     low_contrast=Counter()
     original_paths=set()
+    folders=[]
+    all_count=0
     for split in ("train","test"):
         for label in CLASS_NAMES_A:
             folder=root/split/label
             if not folder.is_dir():
                 raise RuntimeError("Missing official label directory "+str(folder))
-            for path in sorted(p for p in folder.rglob("*")
-                               if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS):
-                relative=path.relative_to(root).as_posix()
-                if relative in original_paths:
-                    raise RuntimeError("Duplicate relative image path")
-                original_paths.add(relative)
-                try:
-                    stats,contrast=a_image_stats(path)
-                except (OSError,ValueError,UnidentifiedImageError) as exc:
-                    broken.append({"path":relative,"error":type(exc).__name__+": "+str(exc)[:150]})
-                    continue
-                if contrast<9:
-                    low_contrast[(split,label)]+=1
-                original[split].append({
-                    "path":relative,"label":label,"label_id":CLASS_IDS_A[label],
-                    **stats
-                })
+            images=sorted(p for p in folder.rglob("*")
+                          if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS)
+            folders.append((split,label,images))
+            all_count+=len(images)
+    a_audit_progress(output_dir,"AUDIT_STARTED",phase="scan",
+                     files_scanned=0,files_total=all_count,progress_pct=0.0)
+    checked=0
+    for split,label,images in folders:
+        a_audit_progress(output_dir,"AUDIT_CLASS_START",phase="scan",
+                         split=split,class_name=label,
+                         files_scanned=checked,files_total=all_count,
+                         progress_pct=round(100*checked/all_count,2))
+        for path in images:
+            checked+=1
+            if checked==1 or checked%250==0 or checked==all_count:
+                a_audit_progress(output_dir,"AUDIT_PROGRESS",phase="scan",
+                                 split=split,class_name=label,
+                                 files_scanned=checked,files_total=all_count,
+                                 progress_pct=round(100*checked/all_count,2))
+            relative=path.relative_to(root).as_posix()
+            if relative in original_paths:
+                raise RuntimeError("Duplicate relative image path")
+            original_paths.add(relative)
+            try:
+                stats,contrast=a_image_stats(path)
+            except (OSError,ValueError,UnidentifiedImageError) as exc:
+                broken.append({"path":relative,"error":type(exc).__name__+": "+str(exc)[:150]})
+                continue
+            if contrast<9:
+                low_contrast[(split,label)]+=1
+            original[split].append({
+                "path":relative,"label":label,"label_id":CLASS_IDS_A[label],
+                **stats
+            })
     if not original["train"] or not original["test"]:
         raise RuntimeError("No usable train or test images for new A classes")
     # All original selected-class TEST data remain untouched after initial
@@ -207,6 +241,12 @@ def prepare_a(input_root:Path,output_dir:Path,seed:int=2026,val_fraction:float=.
         "identity_or_near_duplicate_leakage_excluded")}
     (output_dir/"quality-report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",
                                                    encoding="utf-8")
+    a_audit_progress(output_dir,"AUDIT_COMPLETE",phase="complete",
+                     files_scanned=checked,files_total=all_count,
+                     progress_pct=100.0,
+                     train_count=audit["total_counts"]["train"],
+                     val_count=audit["total_counts"]["val"],
+                     test_count=audit["total_counts"]["test"])
     print("A_DATA_PREP_DONE "+json.dumps(audit,ensure_ascii=False),flush=True)
     return audit
 
