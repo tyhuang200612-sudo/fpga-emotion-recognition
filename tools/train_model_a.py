@@ -3,8 +3,8 @@
 This is NOT a relabelled C2 model.  Frozen, independently audited A dataset
 is required. The old neutral/happy/sad labels and weights are not imported.
 
-Two independent seeds x 35 epochs (70 actual epochs) in 14 separate Kaggle
-training cells (5 epochs per cell). Durable full epoch/batch logs saved in
+Two independent seeds, up to 80 epochs each, with patience=12 early stop.
+Up to 32 separate five-epoch Kaggle cells. Early-stopped cells are skipped. Durable full epoch/batch logs saved in
 /kaggle/working/model-a-angry-happy-neutral/live-progress.jsonl.
 We do not guarantee live visibility through Kaggle CLI while notebook runs.
 No independent held-out TEST read or evaluation until model selection finishes.
@@ -27,7 +27,9 @@ A_MAP={"angry":0,"happy":1,"neutral":2}
 A_POLICY="fer2013-A-angry-happy-neutral-pixel-audit-v1"
 A_OUTPUT=Path("/kaggle/working/model-a-angry-happy-neutral")
 A_SEEDS=(20261021,20261022)
-A_TOTAL_EPOCHS=35
+A_TOTAL_EPOCHS=80
+A_EARLY_STOP_PATIENCE=12
+A_EARLY_STOP_MIN_DELTA=0.001  # macro-F1 absolute; 0.1 percentage point
 A_EPOCHS_PER_CELL=5
 A_BATCH=64
 A_STATE=None
@@ -87,13 +89,20 @@ def a_log(stage,**values):
     reporter=globals().get("a_live_emit")
     if callable(reporter) and stage in (
          "GPU_BACKWARD_OK","AUDITED_DATA_READY","SEED_START",
-         "BATCH","EPOCH_END","STAGE_END","SEED_END","COMPLETE"):
+         "BATCH","EPOCH_END","STAGE_END","EARLY_STOP","SEED_END","COMPLETE"):
         safe=dict(values)
         if stage=="EPOCH_END":
             safe["progress_pct"]=round(
-                100*(int(values["epoch"])+(35 if int(values["seed"])==20261022 else 0))/70,2)
-            safe["total_epochs"]=70
+                100*(int(values["epoch"])+(A_TOTAL_EPOCHS if int(values["seed"])==A_SEEDS[1] else 0))/(A_TOTAL_EPOCHS*len(A_SEEDS)),2)
+            safe["total_epochs"]=A_TOTAL_EPOCHS*len(A_SEEDS)
         reporter(stage,**safe)
+
+def a_early_stop_update(significant_best,wait,score,delta=A_EARLY_STOP_MIN_DELTA,patience=A_EARLY_STOP_PATIENCE):
+    """Pure step: return (meaningful best, stagnant count, should_stop)."""
+    if significant_best is None or score>significant_best+delta:
+        return float(score),0,False
+    next_wait=wait+1
+    return significant_best,next_wait,next_wait>=patience
 
 def a_seed(seed):
     random.seed(seed);np.random.seed(seed);torch.manual_seed(seed)
@@ -214,9 +223,13 @@ def a_begin(seed):
     s["active"]={
         "seed":seed,"model":model,"training":training,"validation":val,
         "optimizer":optimizer,"scheduler":scheduler,"folder":folder,
-        "epoch":0,"history":[],"best":None
+        "epoch":0,"history":[],"best":None,"significant_best":None,
+        "stale_epochs":0,"stopped_early":False,"stop_reason":None,
+        "stages_completed":0
     }
-    a_log("SEED_START",seed=seed,lr=.0007,weight_decay=.01,epochs=A_TOTAL_EPOCHS)
+    a_log("SEED_START",seed=seed,lr=.0007,weight_decay=.01,
+          max_epochs=A_TOTAL_EPOCHS,early_stop_patience=A_EARLY_STOP_PATIENCE,
+          early_stop_min_delta=A_EARLY_STOP_MIN_DELTA)
     print(f"MODEL A START seed={seed} ({A_TOTAL_EPOCHS} epochs)",flush=True)
 
 def a_validate(model,data,device):
@@ -240,9 +253,15 @@ def a_epochs(n=5):
     if s is None or s["active"] is None or n!=A_EPOCHS_PER_CELL:
         raise RuntimeError("Model A requires exact five-epoch stage")
     v=s["active"]
+    if v["stopped_early"] or v["epoch"]==A_TOTAL_EPOCHS:
+        a_log("STAGE_SKIPPED",seed=v["seed"],epoch=v["epoch"],
+              reason=v["stop_reason"] or "max_epochs")
+        return
     if v["epoch"]+n>A_TOTAL_EPOCHS:
-        raise RuntimeError("Model A exceeding fixed 35 epochs")
+        raise RuntimeError("Model A exceeded 80 epoch maximum")
     for _ in range(n):
+        if v["stopped_early"]:
+            break
         epoch=v["epoch"]+1
         started=time.monotonic()
         model=v["model"];model.train()
@@ -279,9 +298,13 @@ def a_epochs(n=5):
                 "validation":scores,"normalization":"ToTensor grayscale 0..1",
                 "test_evaluated":False,"quantized":False,"fpga_deployed":False,
             },v["folder"]/"best.pt")
+        v["significant_best"],v["stale_epochs"],should_stop=a_early_stop_update(
+            v["significant_best"],v["stale_epochs"],scores["macro_f1"])
         v["epoch"]=epoch
         s["epochs_total"]+=1
         a_log("EPOCH_END",seed=v["seed"],epoch=epoch,
+              epochs_without_improvement=v["stale_epochs"],
+              learning_rate=round(v["optimizer"].param_groups[0]["lr"],9),
               train_loss=round(loss_sum/sample_count,6),
               val_accuracy=round(scores["accuracy"],6),
               val_macro_f1=round(scores["macro_f1"],6),
@@ -294,12 +317,23 @@ def a_epochs(n=5):
               f" loss={loss_sum/sample_count:.5f} VAL_F1={scores['macro_f1']:.5f}"
               f" angry={scores['recall']['angry']:.4f}"
               f" happy={scores['recall']['happy']:.4f}"
-              f" neutral={scores['recall']['neutral']:.4f}",flush=True)
+              f" neutral={scores['recall']['neutral']:.4f}"
+              f" stale={v['stale_epochs']}/{A_EARLY_STOP_PATIENCE}",flush=True)
+        if should_stop:
+            v["stopped_early"]=True
+            v["stop_reason"]="early_stopping"
+            a_log("EARLY_STOP",seed=v["seed"],epoch=epoch,
+                  patience=A_EARLY_STOP_PATIENCE,
+                  min_delta=A_EARLY_STOP_MIN_DELTA,
+                  best_epoch=v["best"]["epoch"],
+                  best_val_macro_f1=v["best"]["validation"]["macro_f1"])
+            break
     (v["folder"]/"history.json").write_text(json.dumps({
         "seed":v["seed"],"history":v["history"],
         "class_names":list(A_LABELS)
     },ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-    stage=v["epoch"]//A_EPOCHS_PER_CELL
+    v["stages_completed"]+=1
+    stage=v["stages_completed"]
     torch.save({
         "state_dict":{k:t.detach().cpu() for k,t in v["model"].state_dict().items()},
         "optimizer":v["optimizer"].state_dict(),
@@ -309,7 +343,7 @@ def a_epochs(n=5):
         "cuda_rng":torch.cuda.get_rng_state_all(),
     },v["folder"]/f"stage_{stage:02d}.pt")
     a_log("STAGE_END",seed=v["seed"],epoch=v["epoch"],stage=stage,
-          cumulative_epochs=s["epochs_total"])
+          cumulative_epochs=s["epochs_total"],stopped_early=v["stopped_early"])
     print(f"MODEL A FIVE EPOCH STAGE COMPLETED seed={v['seed']} to={v['epoch']}",flush=True)
 
 def a_finish_seed():
@@ -317,24 +351,40 @@ def a_finish_seed():
     if s is None or s["active"] is None:
         raise RuntimeError("Model A missing active seed")
     v=s["active"]
-    if v["epoch"]!=A_TOTAL_EPOCHS or len(v["history"])!=A_TOTAL_EPOCHS:
-        raise RuntimeError("Model A seed finished too early")
+    if not (1<=v["epoch"]<=A_TOTAL_EPOCHS) or len(v["history"])!=v["epoch"]:
+        raise RuntimeError("Model A incomplete or malformed seed history")
+    if v["epoch"]<A_TOTAL_EPOCHS and not v["stopped_early"]:
+        raise RuntimeError("Model A stopped before maximum without early-stop evidence")
     if v["best"] is None or not (v["folder"]/"best.pt").is_file():
         raise RuntimeError("Model A best checkpoint missing")
-    s["completed"][v["seed"]]=v["best"]
+    reason=v["stop_reason"] or "max_epochs"
+    s["completed"][v["seed"]]={
+        "best":v["best"],"epochs_trained":v["epoch"],
+        "stages_completed":v["stages_completed"],"stop_reason":reason,
+        "stale_epochs":v["stale_epochs"]
+    }
     a_log("SEED_END",seed=v["seed"],best_epoch=v["best"]["epoch"],
-          best_macro_f1=v["best"]["validation"]["macro_f1"])
+          best_macro_f1=v["best"]["validation"]["macro_f1"],
+          epochs_trained=v["epoch"],stages_completed=v["stages_completed"],
+          stop_reason=reason)
     s["active"]=None
 
 def a_finish_all():
     s=A_STATE
     if s is None or s["active"] is not None:
         raise RuntimeError("Model A not properly terminated")
-    if s["epochs_total"]!=70 or set(s["completed"])!=set(A_SEEDS):
-        raise RuntimeError("Model A requires two independent full 35-epoch runs")
+    if set(s["completed"])!=set(A_SEEDS):
+        raise RuntimeError("Model A requires two completed seeds")
+    actual=sum(v["epochs_trained"] for v in s["completed"].values())
+    stages=sum(v["stages_completed"] for v in s["completed"].values())
+    if not (2<=actual<=A_TOTAL_EPOCHS*len(A_SEEDS)) or actual!=s["epochs_total"]:
+        raise RuntimeError("Model A total epochs mismatch")
     records={str(seed):{
-        "best_epoch":s["completed"][seed]["epoch"],
-        "validation":s["completed"][seed]["validation"]
+        "best_epoch":s["completed"][seed]["best"]["epoch"],
+        "validation":s["completed"][seed]["best"]["validation"],
+        "epochs_trained":s["completed"][seed]["epochs_trained"],
+        "stages_completed":s["completed"][seed]["stages_completed"],
+        "stop_reason":s["completed"][seed]["stop_reason"],
     } for seed in A_SEEDS}
     report={
         "project":"Model A: angry happy neutral",
@@ -347,8 +397,11 @@ def a_finish_all():
         "seeds":list(A_SEEDS),
         "per_seed":records,
         "mean_macro_f1":float(np.mean([r["validation"]["macro_f1"] for r in records.values()])),
-        "total_epochs_completed":70,
-        "completed_stages":14,
+        "max_epochs_per_seed":A_TOTAL_EPOCHS,
+        "early_stop_patience":A_EARLY_STOP_PATIENCE,
+        "early_stop_min_delta":A_EARLY_STOP_MIN_DELTA,
+        "total_epochs_completed":actual,
+        "completed_stages":stages,
         "test_evaluated":False,
         "int8_verified":False,
         "fpga_verified":False,
@@ -358,8 +411,10 @@ def a_finish_all():
         "note":"Compare A against A under same label map, NOT old C2-C F1 across different tasks."
     }
     (A_OUTPUT/"results.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-    a_log("COMPLETE",total_epochs=70,
+    a_log("COMPLETE",total_epochs=actual,completed_stages=stages,
+          max_epochs_per_seed=A_TOTAL_EPOCHS,
           mean_macro_f1=round(report["mean_macro_f1"],6),
           per_seed={k:round(v["validation"]["macro_f1"],6) for k,v in records.items()})
-    print("A COMPLETED: 2 seeds * 35 epochs; full logs and weights saved",flush=True)
+    print(f"A COMPLETED: {actual}/160 max epochs across 2 seeds "
+          f"({stages} saved stages); best weights + complete logs saved",flush=True)
     return report
