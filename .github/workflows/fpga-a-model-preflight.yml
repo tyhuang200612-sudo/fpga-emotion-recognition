@@ -1,0 +1,38 @@
+name: "A: CPU preflight new label mapping, model and epoch logs"
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fpga-a-model-preflight.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-model-a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU model test dependencies
+        run: |
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pillow numpy scikit-learn
+      - name: Validate new Model A architecture and all training-cell syntax
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p 'test_model_a.py' -v
+          python -m tools.build_kaggle_model_a --out build/kaggle_model_a
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('build/kaggle_model_a')
+          d=json.loads((p/'kernel-metadata.json').read_text())
+          nb=json.loads((p/d['code_file']).read_text())
+          stage=sum('a_epochs(5)' in ''.join(c['source'])
+                    for c in nb['cells'] if c['cell_type']=='code')
+          assert stage==14
+          print("Model A offline checks all pass; GPU not started by this workflow.")
+          PY
