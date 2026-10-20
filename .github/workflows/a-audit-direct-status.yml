@@ -23,6 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$KAGGLE_API_TOKEN"
+          echo "=== A CANCELLED AUDIT STATUS BEFORE LOGGED RESTART ==="
           echo "=== A AUDIT STATUS ==="
           kaggle kernels status "$KERNEL"
           echo "=== A VISIBLE LOG SUMMARY ==="
