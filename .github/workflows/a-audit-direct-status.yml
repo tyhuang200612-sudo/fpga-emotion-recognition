@@ -1,0 +1,35 @@
+name: "A audit quick direct status logs and output names (read-only)"
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/a-audit-direct-status.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KERNEL: tyhuanga/fpga-a-angry-happy-neutral-dataset-audit
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install Kaggle
+        run: python -m pip install kaggle
+      - name: Read direct remote audit status and visible stderr and outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          echo "=== A AUDIT STATUS ==="
+          kaggle kernels status "$KERNEL"
+          echo "=== A VISIBLE LOG SUMMARY ==="
+          kaggle kernels logs "$KERNEL" >/tmp/a-audit-logs.json 2>&1 || true
+          echo "LOG_BYTES=$(wc -c </tmp/a-audit-logs.json)"
+          grep -E 'A_DATA_PREP_DONE|Traceback|Error|Exception|progress|warning' /tmp/a-audit-logs.json | tail -12 | cut -c 1-1200 || true
+          echo "=== A REMOTE OUTPUT FILES ==="
+          kaggle kernels files "$KERNEL" --page-size 100 > /tmp/a-audit-files.txt 2>&1 || true
+          head -30 /tmp/a-audit-files.txt | cut -c 1-500
+          echo "No GPU allocated or modified. No Kaggle notebook restarted."
