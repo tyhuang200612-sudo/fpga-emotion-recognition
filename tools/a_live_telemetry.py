@@ -25,7 +25,10 @@ _A_LIVE_ALLOWED={
     "loss","train_loss","val_macro_f1","val_accuracy","angry_recall",
     "happy_recall","neutral_recall","elapsed_seconds","stage","total_stages",
     "message","train_count","val_count","test_count","best_macro_f1",
-    "gpu","audit_rows"
+    "gpu","audit_rows","max_epochs","early_stop_patience","early_stop_min_delta",
+    "epochs_without_improvement","learning_rate","best_epoch","best_val_macro_f1",
+    "epochs_trained","stages_completed","completed_stages","max_epochs_per_seed",
+    "stop_reason","cumulative_epochs","stopped_early"
 }
 
 def a_live_emit(event,*,hard_fail=False,**values):
@@ -53,6 +56,7 @@ def a_live_emit(event,*,hard_fail=False,**values):
             if key in ("class_name","split","phase","status","gpu","message"):
                 clean[key]=val[:45] if val in (
                     "angry","happy","neutral","train","test","val",
+                    "early_stopping","max_epochs",
                     "scan","verify","ready","running","complete","cpu",
                     "cuda","started","waiting") else "progress"
     encoded=_a_live_json.dumps(clean,ensure_ascii=False,separators=(",",":")).encode("utf-8")
