@@ -1,0 +1,60 @@
+name: "A live progress receipt verification (read-only)"
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fpga-a-live-proof.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Check actual A V2 remote state and external independent progress
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== KAGGLE NEW A V2 STATE ==="
+          kaggle kernels status tyhuanga/fpga-a-live-audit-v2
+          echo "=== LIVE TRANSPORT LATEST EVENTS ==="
+          python - <<'PY'
+          import json,urllib.request
+          url="https://ntfy.sh/fpga-a-live-c16bd8934720aa5e9182de3df605940a/json?poll=1"
+          request=urllib.request.Request(url,headers={"User-Agent":"A-progress-check/1.0"})
+          try:
+              raw=urllib.request.urlopen(request,timeout=15).read().decode("utf-8")
+          except Exception as err:
+              print("Live relay currently unavailable:",type(err).__name__,str(err)[:90])
+              raise
+          data=[]
+          for line in raw.splitlines():
+              try:
+                  obj=json.loads(line)
+                  if obj.get("event")!="message":
+                      continue
+                  msg=json.loads(obj.get("message","{}"))
+                  if isinstance(msg,dict):
+                      data.append({k:msg.get(k) for k in (
+                          "event","phase","files_scanned","files_total","progress_pct",
+                          "seed","epoch","val_macro_f1","train_count","val_count","test_count"
+                      ) if k in msg})
+              except (ValueError,TypeError):
+                  continue
+          print("LIVE_MESSAGES_RETURNED",len(data))
+          for m in data[-12:]:
+              print("LIVE_EVENT",json.dumps(m,ensure_ascii=False))
+          print("ACTUAL_KAGGLE_AUDIT_EVENT_COUNT",
+                sum(e.get("event","").startswith("AUDIT_") for e in data))
+          PY
+          echo "=== REMOTE V2 LOG BUFFER ==="
+          kaggle kernels logs tyhuanga/fpga-a-live-audit-v2 >/tmp/a-v2.log 2>&1 || true
+          echo "KAGGLE_STDOUT_BYTES=$(wc -c </tmp/a-v2.log)"
+          grep -E 'A_AUDIT_PROGRESS|Traceback|Error' /tmp/a-v2.log | tail -5 | cut -c1-400 || true
+          echo "No training started or stopped by this read-only check."
