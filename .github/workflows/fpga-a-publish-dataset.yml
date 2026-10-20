@@ -63,7 +63,7 @@ jobs:
           if echo "$status" | grep -q 'quality-report.json' && echo "$status" | grep -q 'train.csv'; then
             echo "exists=true" >>"$GITHUB_OUTPUT"
             echo "::notice::Clean private A dataset already published; no duplicate."
-          elif echo "$status" | grep -Eqi 'not found|404|does not exist|Permission|was denied|Could not find|not found'; then
+          elif echo "$status" | grep -Eqi 'not found|404|403|Forbidden|does not exist|Permission|was denied|Could not find'; then
             echo "exists=false" >>"$GITHUB_OUTPUT"
           else
             echo "::error::Ambiguous private A dataset state; don't overwrite."
