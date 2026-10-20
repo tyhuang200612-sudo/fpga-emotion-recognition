@@ -8,8 +8,8 @@ import argparse
 import json
 from pathlib import Path
 
-KERNEL_ID="tyhuanga/fpga-model-a-angry-happy-neutral"
-FILE_NAME="fpga-model-a-angry-happy-neutral.ipynb"
+KERNEL_ID="tyhuanga/fpga-model-a-r1-angry-happy-neutral"
+FILE_NAME="fpga-model-a-r1-angry-happy-neutral.ipynb"
 DATASET_ID="tyhuanga/fpga-a-angry-happy-neutral-clean-v1"
 
 def code(source:str,index:int):
@@ -105,7 +105,7 @@ def build_model_a(root:Path,out:Path):
         if c["cell_type"]=="code":
             compile("".join(c["source"]),f"Model A notebook cell {i}","exec")
     md={
-        "id":KERNEL_ID,"title":"fpga-model-a-angry-happy-neutral",
+        "id":KERNEL_ID,"title":"fpga-model-a-r1-angry-happy-neutral",
         "code_file":FILE_NAME,
         "language":"python","kernel_type":"notebook",
         "is_private":True,"enable_gpu":True,
