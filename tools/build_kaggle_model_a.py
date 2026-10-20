@@ -45,6 +45,10 @@ def build_model_a(root:Path,out:Path):
         # "sad" in documentation is fine; check only for use in Python label map or old checkpoint.
         if "c2026-baseline.pt" in trainer or '("neutral","happy","sad")' in trainer:
             raise RuntimeError("Old frozen model/class map was incorrectly reused")
+    telemetry=(root/"tools"/"a_live_telemetry.py").read_text(encoding="utf-8")
+    if 'A_LIVE_TOPIC="fpga-a-live-c16bd8934720aa5e9182de3df605940a"' not in telemetry:
+        raise RuntimeError("Model A live transport topic unexpected")
+    telemetry=telemetry.replace("from __future__ import annotations\n","")
     notebook={
         "nbformat":4,"nbformat_minor":5,
         "metadata":{
@@ -64,8 +68,9 @@ def build_model_a(root:Path,out:Path):
                "Kaggle API may withhold stdout until notebook is complete.\n",
                "Never load/test/tune on independent original FER2013 test.\n",
              ]},
+            code(telemetry,29),
             code(trainer,0),
-            code("print('MODEL A: Verify genuine GPU and audited angry/happy/neutral data',flush=True)\na_setup()\n",1)
+            code("a_live_probe()\nprint('MODEL A: Verify genuine GPU and audited angry/happy/neutral data',flush=True)\na_setup()\n",1)
         ],
     }
     ix=2
@@ -91,7 +96,7 @@ def build_model_a(root:Path,out:Path):
         "'per_seed':{s:r['validation']['macro_f1'] for s,r in final['per_seed'].items()},"
         "'classes':final['class_names']},ensure_ascii=False),flush=True)\n",ix))
     cells=notebook["cells"]
-    if len(cells)!=22:
+    if len(cells)!=23:
         raise RuntimeError(f"Wrong A notebook layout, got {len(cells)}")
     if sum("a_epochs(5)" in "".join(c["source"])
            for c in cells if c["cell_type"]=="code")!=14:
@@ -104,7 +109,7 @@ def build_model_a(root:Path,out:Path):
         "code_file":FILE_NAME,
         "language":"python","kernel_type":"notebook",
         "is_private":True,"enable_gpu":True,
-        "enable_internet":False,"machine_shape":"NvidiaTeslaT4",
+        "enable_internet":True,"machine_shape":"NvidiaTeslaT4",
         "dataset_sources":["msambare/fer2013",DATASET_ID],
         "competition_sources":[],"kernel_sources":[],"model_sources":[]
     }
