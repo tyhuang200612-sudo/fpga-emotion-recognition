@@ -83,6 +83,17 @@ def a_log(stage,**values):
     with (A_OUTPUT/"live-progress.jsonl").open("a",encoding="utf-8") as f:
         f.write(line+"\n");f.flush()
     print("A_TRAIN_LOG "+line,flush=True)
+    # Only aggregate metrics reach the unlisted (not private) live channel.
+    reporter=globals().get("a_live_emit")
+    if callable(reporter) and stage in (
+         "GPU_BACKWARD_OK","AUDITED_DATA_READY","SEED_START",
+         "BATCH","EPOCH_END","STAGE_END","SEED_END","COMPLETE"):
+        safe=dict(values)
+        if stage=="EPOCH_END":
+            safe["progress_pct"]=round(
+                100*(int(values["epoch"])+(35 if int(values["seed"])==20261022 else 0))/70,2)
+            safe["total_epochs"]=70
+        reporter(stage,**safe)
 
 def a_seed(seed):
     random.seed(seed);np.random.seed(seed);torch.manual_seed(seed)
