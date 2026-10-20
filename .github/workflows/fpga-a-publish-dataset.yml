@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 15
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-      AUDIT: tyhuanga/fpga-a-angry-happy-neutral-dataset-audit
+      AUDIT: tyhuanga/fpga-a-live-audit-v2
       DATASET: tyhuanga/fpga-a-angry-happy-neutral-clean-v1
     steps:
       - uses: actions/setup-python@v5
@@ -108,6 +108,17 @@ jobs:
           assert not pixelsets["train"]&pixelsets["test"]
           assert not pixelsets["val"]&pixelsets["test"]
           assert hashlib.sha256((root/"test.csv").read_bytes()).hexdigest()==report["heldout_test_sha256"]
+          progress=root/"audit-progress.jsonl"
+          assert progress.is_file(),"Missing durable A scan progress log"
+          events=[json.loads(line) for line in progress.read_text(encoding="utf-8").splitlines() if line.strip()]
+          assert any(e["event"]=="AUDIT_STARTED" for e in events)
+          assert any(e["event"]=="AUDIT_PROGRESS" for e in events)
+          assert any(e["event"]=="AUDIT_COMPLETE" for e in events)
+          assert events[-1]["event"]=="AUDIT_COMPLETE"
+          assert events[-1]["train_count"]==report["total_counts"]["train"]
+          assert events[-1]["val_count"]==report["total_counts"]["val"]
+          assert events[-1]["test_count"]==report["total_counts"]["test"]
+          shutil.copy2(progress,Path("a-private")/"audit-progress.jsonl")
           shutil.copy2(match[0],Path("a-private")/"quality-report.json")
           shutil.copy2(root/"audit.json",Path("a-private")/"audit.json")
           print("A DATA AUDIT VERIFIED ON REAL KAGGLE OUTPUT",report["total_counts"])
@@ -147,4 +158,5 @@ jobs:
           grep -q 'val.csv' /tmp/a-dataset-files.txt
           grep -q 'test.csv' /tmp/a-dataset-files.txt
           grep -q 'quality-report.json' /tmp/a-dataset-files.txt
+          grep -q 'audit-progress.jsonl' /tmp/a-dataset-files.txt
           echo "A READY: independently audited metadata available to Model A." >>"$GITHUB_STEP_SUMMARY"
