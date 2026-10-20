@@ -76,7 +76,7 @@ jobs:
           fi
           echo "launch=true" >>"$GITHUB_OUTPUT"
 
-      - name: Validate actual A trainer, per-class loss and 14 durable log stages on CPU
+      - name: Validate actual A trainer, per-class loss and 32 maximum log stages and patience-12 early stopping on CPU
         if: steps.gate.outputs.launch == 'true'
         shell: bash
         run: |
@@ -96,7 +96,7 @@ jobs:
           assert m['dataset_sources']==[
               'msambare/fer2013','tyhuanga/fpga-a-angry-happy-neutral-clean-v1']
           assert sum('a_epochs(5)' in ''.join(c['source'])
-                     for c in nb['cells'] if c['cell_type']=='code')==14
+                     for c in nb['cells'] if c['cell_type']=='code')==32
           print('MODEL A SAFE PREFLIGHT: new mapping, two seeds, logs, no TEST evaluation',flush=True)
           PY
 
