@@ -1,0 +1,76 @@
+name: "A: build angry/happy/neutral clean FER2013 dataset (CPU only)"
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fpga-a-dataset-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpga-a-cpu-dataset-once
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      TARGET: tyhuanga/fpga-a-angry-happy-neutral-dataset-audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install PIL and Kaggle API (CPU)
+        run: python -m pip install pillow kaggle
+      - name: Verify label migration and dedup on synthetic faces
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p 'test_a_dataset.py' -v
+          python -m tools.build_kaggle_a_dataset --out build/kaggle_a_dataset_audit
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out=Path('build/kaggle_a_dataset_audit')
+          m=json.loads((out/'kernel-metadata.json').read_text())
+          assert m['id']=='tyhuanga/fpga-a-angry-happy-neutral-dataset-audit'
+          assert m['is_private'] and m['enable_gpu'] is False
+          assert m['dataset_sources']==['msambare/fer2013']
+          code=(out/m['code_file']).read_text()
+          assert 'CLASS_NAMES_A=("angry","happy","neutral")' in code
+          assert 'original_TEST_selection_or_hyperparameter_tuning' in code
+          print('A CPU-only dataset audit passed preflight.')
+          PY
+      - name: Check Kaggle existing A audit status
+        id: prior
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          status=$(kaggle kernels status "$TARGET" 2>&1 || true)
+          echo "A audit status: $status"
+          if echo "$status" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|COMPLETE|CANCEL_REQUESTED)'; then
+            echo "submit=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Audit already submitted or completed, no overwrite."
+          elif echo "$status" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::Prior A audit failed; diagnose rather than auto-rerun."
+            exit 1
+          elif echo "$status" | grep -Eqi 'not found|404|does not exist|Kernel not found|No kernels|Cannot access kernel.*Permission.*kernels.get.*was denied'; then
+            echo "submit=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::error::Unknown Kaggle status; refuse duplicate audit."
+            exit 1
+          fi
+      - name: Submit private Kaggle A raw dataset cleaning (zero GPU)
+        if: steps.prior.outputs.submit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p build/kaggle_a_dataset_audit
+          kaggle kernels status "$TARGET"
+          echo "### A CPU audit submitted, not yet complete" >>"$GITHUB_STEP_SUMMARY"
+          echo "https://www.kaggle.com/code/tyhuanga/fpga-a-angry-happy-neutral-dataset-audit" >>"$GITHUB_STEP_SUMMARY"
