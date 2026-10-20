@@ -15,7 +15,7 @@ class ATrainingTests(unittest.TestCase):
             self.assertEqual(m["dataset_sources"],[
                 "msambare/fer2013","tyhuanga/fpga-a-angry-happy-neutral-clean-v1"])
             nb=json.loads((p/m["code_file"]).read_text())
-            self.assertEqual(len(nb["cells"]),40)
+            self.assertEqual(len(nb["cells"]),41)
             traincode="\n".join("".join(c["source"]) for c in nb["cells"]
                                 if c["cell_type"]=="code")
             stages=[c for c in nb["cells"]
