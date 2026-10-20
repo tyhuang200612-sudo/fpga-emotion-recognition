@@ -63,12 +63,12 @@ def build_model_a(root:Path,out:Path):
                "A brand-new, from-scratch TinyCNN FPGA-student experiment.\n",
                "Explicit class IDs: angry=0, happy=1, neutral=2.\n",
                "Requires independently CPU-audited private A manifest dataset.\n",
-               "2 seeds × 35 epochs, with 14 independently executed five-epoch cells.\n",
+               "2 seeds × max 80 epochs, patience 12, with 32 five-epoch cells.\n",
                "Each epoch logs loss, accuracy, macro-F1, angry/happy/neutral recall and confusion matrix.\n",
                "Kaggle API may withhold stdout until notebook is complete.\n",
                "Never load/test/tune on independent original FER2013 test.\n",
              ]},
-            code(telemetry,29),
+            code(telemetry,900),
             code(trainer,0),
             code("a_live_probe()\nprint('MODEL A: Verify genuine GPU and audited angry/happy/neutral data',flush=True)\na_setup()\n",1)
         ],
@@ -77,14 +77,14 @@ def build_model_a(root:Path,out:Path):
     for seed in (20261021,20261022):
         ix+=1
         notebook["cells"].append(code(f"a_begin({seed})\n",ix))
-        for stage in range(1,8):
+        for stage in range(1,17):
             ix+=1
             left=(stage-1)*5+1
             right=stage*5
             notebook["cells"].append(code(
                 f"print('MODEL A BEGIN seed={seed} epochs={left}-{right}',flush=True)\n"
                 "a_epochs(5)\n"
-                f"print('MODEL A COMPLETE stage {stage}/7 seed={seed}',flush=True)\n",ix
+                f"print('MODEL A COMPLETE stage {stage}/16 seed={seed}',flush=True)\n",ix
             ))
         ix+=1
         notebook["cells"].append(code("a_finish_seed()\n",ix))
@@ -96,11 +96,11 @@ def build_model_a(root:Path,out:Path):
         "'per_seed':{s:r['validation']['macro_f1'] for s,r in final['per_seed'].items()},"
         "'classes':final['class_names']},ensure_ascii=False),flush=True)\n",ix))
     cells=notebook["cells"]
-    if len(cells)!=23:
+    if len(cells)!=40:
         raise RuntimeError(f"Wrong A notebook layout, got {len(cells)}")
     if sum("a_epochs(5)" in "".join(c["source"])
-           for c in cells if c["cell_type"]=="code")!=14:
-        raise RuntimeError("Must include fourteen independent five-epoch cells")
+           for c in cells if c["cell_type"]=="code")!=32:
+        raise RuntimeError("Must include thirty-two independent five-epoch cells")
     for i,c in enumerate(cells):
         if c["cell_type"]=="code":
             compile("".join(c["source"]),f"Model A notebook cell {i}","exec")
@@ -117,7 +117,7 @@ def build_model_a(root:Path,out:Path):
     (out/"kernel-metadata.json").write_text(json.dumps(md,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     if {p.name for p in out.iterdir()}!={FILE_NAME,"kernel-metadata.json"}:
         raise RuntimeError("Unexpected files in A private GPU bundle")
-    print("[MODEL A] Notebook checked: 2 x 35 epochs, 14 stage logs, no GPU launched",flush=True)
+    print("[MODEL A] Notebook checked: 2 x max80 epochs, 32 stage cells and early stopping, no GPU launched",flush=True)
     return md
 
 if __name__=="__main__":
