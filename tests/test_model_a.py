@@ -15,7 +15,7 @@ class ATrainingTests(unittest.TestCase):
             self.assertEqual(m["dataset_sources"],[
                 "msambare/fer2013","tyhuanga/fpga-a-angry-happy-neutral-clean-v1"])
             nb=json.loads((p/m["code_file"]).read_text())
-            self.assertEqual(len(nb["cells"]),22)
+            self.assertEqual(len(nb["cells"]),23)
             traincode="\n".join("".join(c["source"]) for c in nb["cells"]
                                 if c["cell_type"]=="code")
             stages=[c for c in nb["cells"]
@@ -30,6 +30,9 @@ class ATrainingTests(unittest.TestCase):
             self.assertIn('"STAGE_END"',traincode)
             self.assertIn('"live-progress.jsonl"',traincode)
             self.assertIn("GPU_BACKWARD_OK",traincode)
+            self.assertIn("a_live_probe()",traincode)
+            self.assertIn("A_LIVE_TOPIC",traincode)
+            self.assertTrue(m["enable_internet"])
             self.assertIn("torch.use_deterministic_algorithms(False)",traincode)
             self.assertNotIn('"sad":',traincode)
             self.assertNotIn("c2026-baseline.pt",traincode)
