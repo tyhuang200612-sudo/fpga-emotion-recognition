@@ -15,7 +15,7 @@ class ADataTests(unittest.TestCase):
                 folder=root/split/label
                 folder.mkdir(parents=True)
                 for n in range(8 if split=="train" else 3):
-                    im=Image.new("L",(48,48),50+ci*40+n)
+                    im=Image.new("L",(48,48),50+ci*40+n+(80 if split=="test" else 0))
                     im.putpixel((3+n,4+ci),235)
                     im.save(folder/f"{n}.png")
         # The old sad class exists on disk and MUST NOT be scanned by A.
