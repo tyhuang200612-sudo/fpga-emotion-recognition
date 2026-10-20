@@ -10,7 +10,7 @@ class ATrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)
             m=build_model_a(Path("."),p)
-            self.assertEqual(m["id"],"tyhuanga/fpga-model-a-angry-happy-neutral")
+            self.assertEqual(m["id"],"tyhuanga/fpga-model-a-r1-angry-happy-neutral")
             self.assertTrue(m["is_private"] and m["enable_gpu"])
             self.assertEqual(m["dataset_sources"],[
                 "msambare/fer2013","tyhuanga/fpga-a-angry-happy-neutral-clean-v1"])
