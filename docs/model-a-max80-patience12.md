@@ -9,7 +9,7 @@
 - 每轮验证 Macro-F1 对“上次显著改善记录”若超过**绝对0.001**（0.1 个百分点）则重置早停计数；连续**12轮**未达到阈值则触发 `EARLY_STOP`。最佳 `best.pt` 独立记录该种子在验证集上最高 Macro-F1，而不是最后一轮。
 - ReduceLROnPlateau `patience=4,factor=0.5`，初始 `AdamW lr=0.0007`；训练轮数的上限和早停与学习率调度彼此独立。
 - 私有 Kaggle Notebook 最多有**32个5轮阶段单元**，提前停下的后续单元 `STAGE_SKIPPED`，不会运行 GPU 反向传播。
-- 每批次和每轮 `A_TRAIN_LOG`（train loss / val accuracy / val Macro-F1 / 三类召回 / 混淆矩阵）写入 `live-progress.jsonl`，并尝试对数值-only 外部进度通道发消息。公网匿名主题不可用于隐私数据；Kaggle API可能缓冲 stdout，不能保证其 Logs 页实时更新。
+- 每轮以及首批次、约每40批的 `A_TRAIN_LOG`（train loss / val accuracy / val Macro-F1 / 三类召回 / 混淆矩阵）写入 `live-progress.jsonl`，并尝试对数值-only 外部进度通道发消息。公网匿名主题不可用于隐私数据；Kaggle API可能缓冲 stdout，不能保证其 Logs 页实时更新。
 - 每个实际训练阶段保存 `stage_XX.pt` 和累积 `history.json`。每种子有一个验证集最佳 `best.pt`；`results.json` 记录真实 `epochs_trained` / `stages_completed` / `stop_reason` / `best_epoch`。
 - `.github/workflows/fpga-a-results.yml` 必须验证两份最佳权重、每种子实际训练轮数连续完整的历史、每个实际阶段检查点及 `EPOCH_END/STAGE_END/SEED_END/COMPLETE` 事件计数。早停可产生小于160轮的合法结果；**不要再按旧的70轮验收**。
 - 完整结果**不表示手机真实摄像头/独立TEST/INT8/FPGA实现已经验收**，也不得未经测试就自动替换线上旧模型。
