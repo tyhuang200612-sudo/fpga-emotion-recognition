@@ -27,6 +27,7 @@ jobs:
           python-version: '3.11'
       - name: Install PIL and Kaggle API (CPU)
         run: python -m pip install pillow kaggle
+      # New synthetic test isolates intended overlap from unrelated sample pixels.
       - name: Verify label migration and dedup on synthetic faces
         run: |
           set -euo pipefail
