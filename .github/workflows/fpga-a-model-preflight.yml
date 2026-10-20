@@ -33,6 +33,6 @@ jobs:
           nb=json.loads((p/d['code_file']).read_text())
           stage=sum('a_epochs(5)' in ''.join(c['source'])
                     for c in nb['cells'] if c['cell_type']=='code')
-          assert stage==14
+          assert stage==32
           print("Model A offline checks all pass; GPU not started by this workflow.")
           PY
