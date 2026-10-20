@@ -1,0 +1,145 @@
+name: "A: verify full per-epoch logs and archive new angry/happy/neutral model"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fpga-a-results.yml'
+  schedule:
+    - cron: '11 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-a-result-archive-once
+  cancel-in-progress: false
+
+jobs:
+  check-and-archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      KERNEL: tyhuanga/fpga-model-a-angry-happy-neutral
+      ARTIFACT: FPGA-Model-A-Angry-Happy-Neutral-TwoSeeds-70Epoch-Logs-and-Weights
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI for read-only status
+        run: python -m pip install kaggle
+      - name: Obtain actual Kaggle A run status and available epoch log evidence
+        id: status
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          remote=$(kaggle kernels status "$KERNEL" 2>&1 || true)
+          echo "MODEL_A_KAGGLE_STATE=$remote"
+          echo "### New Model A actual status" >>"$GITHUB_STEP_SUMMARY"
+          echo "$remote" >>"$GITHUB_STEP_SUMMARY"
+          if echo "$remote" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+            echo "complete=true" >>"$GITHUB_OUTPUT"
+          elif echo "$remote" | grep -q 'KernelWorkerStatus.ERROR'; then
+            kaggle kernels logs "$KERNEL" >/tmp/a-error.log 2>&1 || true
+            echo "::error::Model A Kaggle failed. Training has NOT been validated."
+            echo "=== Actual A error traceback excerpt ==="
+            tail -40 /tmp/a-error.log
+            exit 1
+          elif echo "$remote" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED)'; then
+            kaggle kernels logs "$KERNEL" >/tmp/a-running.log 2>&1 || true
+            echo "MODEL_A_AVAILABLE_LOG_BYTES=$(wc -c </tmp/a-running.log)"
+            echo "MODEL_A_VISIBLE_EPOCH_EVENTS=$(grep -c 'EPOCH_END' /tmp/a-running.log || true)"
+            echo "complete=false" >>"$GITHUB_OUTPUT"
+            echo "Queue or task running is NOT proof any epoch is trained." >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::Model A not yet launched or unknown state; no result claimed."
+            echo "complete=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Refuse duplicate result archive
+        id: existing
+        if: steps.status.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          num=$(gh api '/repos/tyhuang200612-sudo/fpga-emotion-recognition/actions/artifacts?per_page=100' --jq ".artifacts[] | select(.name == \"$ARTIFACT\" and .expired == false) | .id" | head -1)
+          if test -n "$num"; then
+            echo "::notice::Model A already archived as GitHub artifact $num."
+            echo "need=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "need=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and verify 70 real A epoch histories and both best.pt files
+        if: steps.status.outputs.complete == 'true' && steps.existing.outputs.need == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p a-finished
+          kaggle kernels output "$KERNEL" -p a-finished
+          python - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          files=list(Path("a-finished").rglob("results.json"))
+          assert len(files)==1,files
+          root=files[0].parent
+          r=json.loads(files[0].read_text(encoding="utf-8"))
+          assert r["project"]=="Model A: angry happy neutral"
+          assert r["class_names"]==["angry","happy","neutral"]
+          assert r["class_map"]=={"angry":0,"happy":1,"neutral":2}
+          assert r["source_policy"]=="fer2013-A-angry-happy-neutral-pixel-audit-v1"
+          assert r["seeds"]==[20261021,20261022]
+          assert r["total_epochs_completed"]==70
+          assert r["completed_stages"]==14
+          assert r["old_neutral_happy_sad_checkpoints_reused"] is False
+          assert r["test_evaluated"] is False
+          assert r["int8_verified"] is False
+          assert r["fpga_verified"] is False
+          assert r["phone_camera_verified"] is False
+          assert r["no_automatic_deployment"] is True
+          assert r["train_size"]>300 and r["val_size"]>300
+          for seed in (20261021,20261022):
+            folder=root/f"seed_{seed}"
+            model=folder/"best.pt"
+            assert model.is_file() and model.stat().st_size>100000
+            history=json.loads((folder/"history.json").read_text(encoding="utf-8"))
+            assert history["class_names"]==["angry","happy","neutral"]
+            assert history["seed"]==seed
+            assert len(history["history"])==35
+            assert [x["epoch"] for x in history["history"]]==list(range(1,36))
+            for stage in range(1,8):
+              p=folder/f"stage_{stage:02d}.pt"
+              assert p.is_file() and p.stat().st_size>100000
+          raw=(root/"live-progress.jsonl").read_text(encoding="utf-8")
+          events=[json.loads(t) for t in raw.splitlines() if t.strip()]
+          counts={name:sum(e.get("stage")==name for e in events)
+              for name in ("GPU_BACKWARD_OK","AUDITED_DATA_READY","EPOCH_END",
+                           "STAGE_END","SEED_END","COMPLETE")}
+          assert counts=={
+              "GPU_BACKWARD_OK":1,"AUDITED_DATA_READY":1,
+              "EPOCH_END":70,"STAGE_END":14,"SEED_END":2,"COMPLETE":1,
+          },counts
+          assert sum(x["epoch"]==35 for x in events if x.get("stage")=="EPOCH_END")==2
+          print("MODEL A COMPLETE VERIFIED:",counts)
+          print("Final A classes:",r["class_names"])
+          print("Validation mean Macro-F1:",r["mean_macro_f1"])
+          for seed,run in r["per_seed"].items():
+              print("SEED",seed,"BEST_EPOCH",run["best_epoch"],
+                    "MACRO_F1",run["validation"]["macro_f1"],
+                    "RECALLS",run["validation"]["recall"],
+                    "CONFUSION",run["validation"]["confusion_matrix"])
+          print("Note: FP32 val only; no TEST/camera/FPGA/INT8 proof")
+          PY
+      - name: Save true A model weights and complete training logs as GitHub artifact
+        if: steps.status.outputs.complete == 'true' && steps.existing.outputs.need == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: FPGA-Model-A-Angry-Happy-Neutral-TwoSeeds-70Epoch-Logs-and-Weights
+          path: a-finished/
+          if-no-files-found: error
+          retention-days: 30
