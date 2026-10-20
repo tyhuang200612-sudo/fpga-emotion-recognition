@@ -24,8 +24,8 @@ jobs:
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       GH_TOKEN: ${{ github.token }}
-      KERNEL: tyhuanga/fpga-model-a-angry-happy-neutral
-      ARTIFACT: FPGA-Model-A-Angry-Happy-Neutral-TwoSeeds-Max160-EarlyStop12-Logs-and-Weights
+      KERNEL: tyhuanga/fpga-model-a-r1-angry-happy-neutral
+      ARTIFACT: FPGA-Model-A-R1-Angry-Happy-Neutral-Max160-EarlyStop12-Logs-and-Weights
     steps:
       - uses: actions/setup-python@v5
         with:
@@ -172,7 +172,7 @@ jobs:
         if: steps.status.outputs.complete == 'true' && steps.existing.outputs.need == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: FPGA-Model-A-Angry-Happy-Neutral-TwoSeeds-Max160-EarlyStop12-Logs-and-Weights
+          name: FPGA-Model-A-R1-Angry-Happy-Neutral-Max160-EarlyStop12-Logs-and-Weights
           path: a-finished/
           if-no-files-found: error
           retention-days: 30
