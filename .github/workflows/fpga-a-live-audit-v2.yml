@@ -1,0 +1,108 @@
+name: "A-v2 live CPU audit: real-time every 250 faces, no GPU"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fpga-a-live-audit-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpga-a-live-audit-v2-single
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      OLD_A: tyhuanga/fpga-a-angry-happy-neutral-dataset-audit
+      NEW_A: tyhuanga/fpga-a-live-audit-v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install CPU audit and Kaggle packages
+        run: python -m pip install pillow kaggle
+      - name: Test A actual classes and verify live-audit script is syntactically valid
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p 'test_a_dataset.py' -v
+          python -m tools.build_kaggle_a_live_audit --out build/kaggle_a_live_audit
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=Path("build/kaggle_a_live_audit")
+          m=json.loads((x/"kernel-metadata.json").read_text())
+          t=(x/m["code_file"]).read_text()
+          assert m["id"]=="tyhuanga/fpga-a-live-audit-v2"
+          assert m["is_private"] and m["enable_internet"] and not m["enable_gpu"]
+          assert m["dataset_sources"]==["msambare/fer2013"]
+          assert 'a_live_probe()' in t and 'AUDIT_PROGRESS' in t
+          assert 'audit-progress.jsonl' in t
+          assert 'CLASS_NAMES_A=("angry","happy","neutral")' in t
+          compile(t,"new-A-live-audit","exec")
+          print("A V2 real time CPU script preflight passed.")
+          PY
+
+      - name: Require old A cancelled; never submit duplicate A V2
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          old=$(kaggle kernels status "$OLD_A" 2>&1 || true)
+          echo "OLD_A_STATUS=$old"
+          if ! echo "$old" | grep -Eq 'KernelWorkerStatus\.(CANCEL_ACKNOWLEDGED|CANCELLED|ERROR|COMPLETE)'; then
+            echo "::error::Old A may still run. Do not overlap audit processes."
+            exit 1
+          fi
+          new=$(kaggle kernels status "$NEW_A" 2>&1 || true)
+          echo "NEW_A_STATUS=$new"
+          if echo "$new" | grep -Eq 'KernelWorkerStatus\.(QUEUED|RUNNING|PENDING|COMPLETE|CANCEL_REQUESTED)'; then
+            echo "submit=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::New A V2 already submitted. Do not overwrite or restart."
+            exit 0
+          fi
+          if echo "$new" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::New A V2 stopped/failed; diagnose and explicitly authorize retry."
+            exit 1
+          fi
+          if ! echo "$new" | grep -Eqi 'not found|404|does not exist|Kernel not found|No kernels|Cannot access kernel.*Permission.*kernels.get.*was denied'; then
+            echo "::error::Unknown new A V2 status"
+            exit 1
+          fi
+          echo "submit=true" >>"$GITHUB_OUTPUT"
+
+      - name: Check progress relay from GitHub (Kaggle separately probes before scanning)
+        if: steps.gate.outputs.submit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from tools.a_live_telemetry import a_live_probe
+          a_live_probe()
+          print("Relay accepted a GitHub preflight message. Kaggle will test again independently.")
+          PY
+
+      - name: Submit PRIVATE A V2 CPU dataset cleaning with live scan telemetry
+        if: steps.gate.outputs.submit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p build/kaggle_a_live_audit
+          state=$(kaggle kernels status "$NEW_A" 2>&1 || true)
+          echo "A_V2_KAGGLE_STATE=$state"
+          if echo "$state" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::Kaggle A V2 immediate failure"
+            exit 1
+          fi
+          echo "### Model A V2 CPU audit submitted with mandatory online log probe" >>"$GITHUB_STEP_SUMMARY"
+          echo "Kaggle: https://www.kaggle.com/code/tyhuanga/fpga-a-live-audit-v2" >>"$GITHUB_STEP_SUMMARY"
+          echo "Live numbers only: https://ntfy.sh/fpga-a-live-c16bd8934720aa5e9182de3df605940a" >>"$GITHUB_STEP_SUMMARY"
+          echo "Submitting is NOT proof real data processing has started; check the live feed." >>"$GITHUB_STEP_SUMMARY"
