@@ -1,0 +1,117 @@
+name: "A: launch new angry/happy/neutral FPGA student with epoch logs"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fpga-a-train.yml'
+  schedule:
+    - cron: '19,49 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpga-model-a-unique-gpu
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      A_DATASET: tyhuanga/fpga-a-angry-happy-neutral-clean-v1
+      A_MODEL: tyhuanga/fpga-model-a-angry-happy-neutral
+      OLD_C9: tyhuanga/fpga-c9-neutral-sad-pair-vs-ce
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+
+      - name: Refuse old C9 concurrent GPU and require cleaned A dataset
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          old=$(kaggle kernels status "$OLD_C9" 2>&1 || true)
+          echo "OLD_C9_STATE=$old"
+          if echo "$old" | grep -Eq 'KernelWorkerStatus\.(RUNNING|QUEUED|PENDING|CANCEL_REQUESTED)'; then
+            echo "::notice::Old C9 still active; defer A until no concurrent GPU."
+            echo "launch=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! echo "$old" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED|COMPLETE)'; then
+            echo "::error::Unknown old C9 status. Do not start concurrent GPU."
+            exit 1
+          fi
+          cleaned=$(kaggle datasets files "$A_DATASET" 2>&1 || true)
+          echo "A_CLEAN_DATASET_STATUS=$cleaned"
+          if ! echo "$cleaned" | grep -q 'quality-report.json' ||
+             ! echo "$cleaned" | grep -q 'train.csv' ||
+             ! echo "$cleaned" | grep -q 'val.csv'; then
+            echo "::notice::Independent CPU audit not yet privately published; no GPU used."
+            echo "launch=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          current=$(kaggle kernels status "$A_MODEL" 2>&1 || true)
+          echo "A_MODEL_PRIOR_STATE=$current"
+          if echo "$current" | grep -Eq 'KernelWorkerStatus\.(QUEUED|RUNNING|PENDING|CANCEL_REQUESTED|COMPLETE)'; then
+            echo "launch=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Model A already submitted or done. Prevent duplicate GPU."
+            exit 0
+          fi
+          if echo "$current" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::Model A previously failed; no blind reruns."
+            exit 1
+          fi
+          if ! echo "$current" | grep -Eqi 'not found|404|does not exist|Kernel not found|No kernels|Cannot access kernel.*Permission.*kernels.get.*was denied'; then
+            echo "::error::Unknown Model A remote status. Abort."
+            exit 1
+          fi
+          echo "launch=true" >>"$GITHUB_OUTPUT"
+
+      - name: Validate actual A trainer, per-class loss and 14 durable log stages on CPU
+        if: steps.gate.outputs.launch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pillow numpy scikit-learn
+          python -m unittest discover -s tests -p 'test_model_a.py' -v
+          python -m tools.build_kaggle_model_a --out build/kaggle_model_a
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('build/kaggle_model_a')
+          m=json.loads((root/'kernel-metadata.json').read_text())
+          nb=json.loads((root/m['code_file']).read_text())
+          assert m['is_private'] and m['enable_gpu']
+          assert m['id']=='tyhuanga/fpga-model-a-angry-happy-neutral'
+          assert m['dataset_sources']==[
+              'msambare/fer2013','tyhuanga/fpga-a-angry-happy-neutral-clean-v1']
+          assert sum('a_epochs(5)' in ''.join(c['source'])
+                     for c in nb['cells'] if c['cell_type']=='code')==14
+          print('MODEL A SAFE PREFLIGHT: new mapping, two seeds, logs, no TEST evaluation',flush=True)
+          PY
+
+      - name: Submit actual private A model GPU job exactly once
+        if: steps.gate.outputs.launch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p build/kaggle_model_a --accelerator NvidiaTeslaT4
+          state=$(kaggle kernels status "$A_MODEL" 2>&1 || true)
+          echo "A_GPU_SUBMISSION_STATUS=$state"
+          if echo "$state" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::Model A immediate Kaggle failure."
+            exit 1
+          fi
+          echo "### Model A submitted, not yet proof of executed Epoch" >>"$GITHUB_STEP_SUMMARY"
+          echo "https://www.kaggle.com/code/tyhuanga/fpga-model-a-angry-happy-neutral" >>"$GITHUB_STEP_SUMMARY"
+          echo "Logs are emitted every batch/epoch and saved to live-progress.jsonl." >>"$GITHUB_STEP_SUMMARY"
