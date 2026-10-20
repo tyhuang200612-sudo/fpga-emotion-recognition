@@ -96,7 +96,7 @@ def build_model_a(root:Path,out:Path):
         "'per_seed':{s:r['validation']['macro_f1'] for s,r in final['per_seed'].items()},"
         "'classes':final['class_names']},ensure_ascii=False),flush=True)\n",ix))
     cells=notebook["cells"]
-    if len(cells)!=40:
+    if len(cells)!=41:
         raise RuntimeError(f"Wrong A notebook layout, got {len(cells)}")
     if sum("a_epochs(5)" in "".join(c["source"])
            for c in cells if c["cell_type"]=="code")!=32:
