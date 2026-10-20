@@ -342,7 +342,7 @@ def a_epochs(n=5):
         "torch_rng":torch.get_rng_state(),
         "cuda_rng":torch.cuda.get_rng_state_all(),
     },v["folder"]/f"stage_{stage:02d}.pt")
-    a_log("STAGE_END",seed=v["seed"],epoch=v["epoch"],stage=stage,
+    a_log("STAGE_END",seed=v["seed"],epoch=v["epoch"],stage_index=stage,
           cumulative_epochs=s["epochs_total"],stopped_early=v["stopped_early"])
     print(f"MODEL A FIVE EPOCH STAGE COMPLETED seed={v['seed']} to={v['epoch']}",flush=True)
 
