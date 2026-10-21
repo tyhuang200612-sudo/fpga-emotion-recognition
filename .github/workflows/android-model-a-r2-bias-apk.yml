@@ -87,7 +87,7 @@ jobs:
           manifest=(root/'app/src/main/AndroidManifest.xml').read_text()
           assert 'LABELS = {"😠 愤怒", "😊 开心", "😐 中性"}' in java
           assert 'model-a-r2-trial.onnx' in java
-          assert '原始未平滑' in java and '平滑后预测' in java
+          assert '原始未平滑' in java and '实验加权后预测' in java
           assert '1.10f' in java and 'cropFactor=1.36f' in java
           for marker in (
               'ANGRY_MULTIPLIERS={1f,2f,4f,8f,16f,32f}',
