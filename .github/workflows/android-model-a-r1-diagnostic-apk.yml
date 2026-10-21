@@ -91,7 +91,7 @@ jobs:
           assert 'cropRotatedFaceLuminance' in code
           assert 'showScores' in code
           for key in ('cropFactor=1.36f', '1.10f',
-                      'limitedYuv=!limitedYuv','(luma-16f)/219f',
+                      'limitedYuv=!limitedYuv','(pixelY-16f)/219f',
                       '原始未平滑','平滑后预测'):
               assert key in code, key
           gradle=Path('build/android-camera-a-r1-diagnostic/app/build.gradle').read_text()
