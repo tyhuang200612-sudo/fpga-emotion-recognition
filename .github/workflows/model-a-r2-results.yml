@@ -1,0 +1,159 @@
+name: "A-R2: archive verified angry-confusion result, logs and both checkpoints"
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/model-a-r2-results.yml']
+  schedule:
+    - cron: '29 */3 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: fpga-a-r2-results-single-archive
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      TARGET: tyhuanga/fpga-model-a-r2-angry-contrast
+      ARTIFACT: FPGA-A-R2-Angry-Contrast-2Seeds-Max160-Real-Logs-Weights
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install authenticated Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Read actual remote status, never restart GPU
+        id: status
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          status=$(kaggle kernels status "$TARGET" 2>&1 || true)
+          echo "A_R2_REMOTE_STATE=$status"
+          echo "### Kaggle A-R2 actual state: $status" >>"$GITHUB_STEP_SUMMARY"
+          if echo "$status" | grep -q 'KernelWorkerStatus.COMPLETE'; then
+            echo "complete=true" >>"$GITHUB_OUTPUT"
+          elif echo "$status" | grep -q 'KernelWorkerStatus.ERROR'; then
+            kaggle kernels logs "$TARGET" >/tmp/a-r2-err.log 2>&1 || true
+            tail -45 /tmp/a-r2-err.log | cut -c1-1200
+            echo "::error::Actual A-R2 Kaggle ERROR; no checkpoint should be promoted."
+            exit 1
+          elif echo "$status" | grep -Eq 'KernelWorkerStatus\.(QUEUED|RUNNING|PENDING|CANCEL_REQUESTED)'; then
+            kaggle kernels logs "$TARGET" >/tmp/a-r2-running.log 2>&1 || true
+            echo "VISIBLE_EPOCH_LOG_EVENTS=$(grep -c 'EPOCH_END' /tmp/a-r2-running.log || true)"
+            echo "VISIBLE_LOG_BYTES=$(wc -c </tmp/a-r2-running.log)"
+            echo "complete=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "complete=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Unknown/no Kaggle R2 run yet; no completion claims."
+          fi
+      - name: Skip existing success archive
+        if: steps.status.outputs.complete == 'true'
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          id=$(gh api '/repos/tyhuang200612-sudo/fpga-emotion-recognition/actions/artifacts?per_page=100' --jq ".artifacts[] | select(.name == \"$ARTIFACT\" and .expired == false) | .id" | head -1)
+          if test -n "$id"; then
+            echo "download=false" >>"$GITHUB_OUTPUT"
+            echo "Already archived: $id"
+          else
+            echo "download=true" >>"$GITHUB_OUTPUT"
+          fi
+      - name: Download and independently validate two R2 best.pt plus all JSONL histories
+        if: steps.status.outputs.complete == 'true' && steps.existing.outputs.download == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p a-r2-complete
+          kaggle kernels output "$TARGET" -p a-r2-complete
+          python - <<'PY'
+          import json, math
+          from pathlib import Path
+          roots=list(Path('a-r2-complete').rglob('results.json'))
+          assert len(roots)==1,roots
+          root=roots[0].parent
+          r=json.loads(roots[0].read_text(encoding='utf-8'))
+          assert r['project']=='Model A: angry happy neutral'
+          assert r['training_family']=='A-R2'
+          assert r['class_names']==['angry','happy','neutral']
+          assert r['class_map']=={'angry':0,'happy':1,'neutral':2}
+          assert r['source_policy']=='fer2013-A-angry-happy-neutral-pixel-audit-v1'
+          assert r['seeds']==[20261021,20261022]
+          assert r['max_epochs_per_seed']==80
+          assert r['early_stop_patience']==12
+          assert abs(r['early_stop_min_delta']-.001)<1e-10
+          assert abs(r['loss_weight']-.18)<1e-10
+          assert abs(r['negative_guard']-.35)<1e-10
+          assert abs(r['margin']-.12)<1e-10
+          assert r['model_architecture_unchanged'] is True
+          assert r['original_a_r1_checkpoints_reused'] is False
+          assert r['label_mapping_changed'] is False
+          assert r['train_val_manifest_changed'] is False
+          assert r['test_evaluated'] is False
+          assert r['phone_camera_verified'] is False
+          assert r['int8_verified'] is False
+          assert r['fpga_verified'] is False
+          assert r['no_automatic_deployment'] is True
+          ref=r['A_R1_reference']
+          cand=r['A_R2_candidate']
+          limits=r['pre_registered_upgrade_limits']
+          assert abs(ref['mean_macro_f1']-.7833534031453266)<1e-10
+          assert abs(ref['mean_angry_recall']-(.718887262079063+.7218155197657394)/2)<1e-10
+          def gate(c):
+              return (c['mean_angry_recall']>=ref['mean_angry_recall']+limits['min_angry_recall_gain']
+                  and c['mean_macro_f1']>=ref['mean_macro_f1']+limits['min_macro_f1_delta']
+                  and c['mean_happy_recall']>=ref['mean_happy_recall']-limits['max_happy_recall_drop']
+                  and c['mean_neutral_recall']>=ref['mean_neutral_recall']-limits['max_neutral_recall_drop']
+                  and c['mean_nonangry_to_angry_error_rate']<=ref['mean_nonangry_to_angry_error_rate']+
+                         limits['max_non_angry_to_angry_error_rate_increase'])
+          assert r['pre_registered_upgrade_gate'] is gate(cand)
+          total=0;stages=0;early=0
+          for seed in (20261021,20261022):
+              entry=r['per_seed'][str(seed)]
+              epochs=entry['epochs_trained'];n=entry['stages_completed']
+              assert 12<=epochs<=80
+              assert n==math.ceil(epochs/5)
+              assert entry['stop_reason']==('early_stopping' if epochs<80 else 'max_epochs')
+              early+=int(epochs<80)
+              total+=epochs;stages+=n
+              folder=root/f'seed_{seed}'
+              best=folder/'best.pt'
+              assert best.is_file() and best.stat().st_size>100000
+              h=json.loads((folder/'history.json').read_text(encoding='utf-8'))
+              rows=h['history']
+              assert h['seed']==seed and h['class_names']==['angry','happy','neutral']
+              assert len(rows)==epochs and [x['epoch'] for x in rows]==list(range(1,epochs+1))
+              assert entry['best_epoch'] in range(1,epochs+1)
+              assert abs(entry['validation']['macro_f1']-max(x['validation']['macro_f1'] for x in rows))<1e-5
+              for i in range(1,n+1):
+                  cp=folder/f'stage_{i:02d}.pt'
+                  assert cp.is_file() and cp.stat().st_size>100000
+          assert r['total_epochs_completed']==total and r['completed_stages']==stages
+          events=[json.loads(x) for x in (root/'live-progress.jsonl').read_text().splitlines() if x.strip()]
+          counts={kind:sum(e.get('stage')==kind for e in events) for kind in (
+              'GPU_BACKWARD_OK','AUDITED_DATA_READY','EPOCH_END','STAGE_END',
+              'STAGE_SKIPPED','EARLY_STOP','SEED_END','COMPLETE','R2_SCORECARD'
+          )}
+          assert counts=={'GPU_BACKWARD_OK':1,'AUDITED_DATA_READY':1,'EPOCH_END':total,
+                          'STAGE_END':stages,'STAGE_SKIPPED':32-stages,
+                          'EARLY_STOP':early,'SEED_END':2,'COMPLETE':1,
+                          'R2_SCORECARD':1},counts
+          print('R2 VERIFIED:',counts)
+          print('A-R1 frozen comparison:',ref)
+          print('A-R2 actual validation comparison:',cand)
+          print('UPGRADE_GATE_PASSED=',r['pre_registered_upgrade_gate'])
+          print('No actual TEST, real phone test, FPGA or INT8 validation claimed')
+          PY
+      - name: Archive validated A-R2 and log evidence even when not an upgrade
+        if: steps.status.outputs.complete == 'true' && steps.existing.outputs.download == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: FPGA-A-R2-Angry-Contrast-2Seeds-Max160-Real-Logs-Weights
+          path: a-r2-complete/
+          if-no-files-found: error
+          retention-days: 30
