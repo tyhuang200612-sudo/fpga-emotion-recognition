@@ -1,0 +1,172 @@
+name: "A-R1 real model Android live camera APK (angry happy neutral)"
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/android-model-a-r1-camera-apk.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-a-r1-real-camera-apk
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout real A architecture and existing on-device Camera2 app
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 for A model conversion
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download REAL VERIFIED Kaggle A-R1 weights and histories from 146-epoch archive
+        uses: actions/download-artifact@v4
+        with:
+          name: FPGA-Model-A-R1-Angry-Happy-Neutral-Max160-EarlyStop12-Logs-and-Weights
+          run-id: '39501565087'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: trained-a-r1
+
+      - name: Confirm class labels, best seed1 Epoch68 and provenance before APK work
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files=list(Path('trained-a-r1').rglob('results.json'))
+          assert len(files)==1,files
+          root=files[0].parent
+          result=json.loads(files[0].read_text(encoding='utf-8'))
+          assert result['class_names']==['angry','happy','neutral']
+          assert result['class_map']=={'angry':0,'happy':1,'neutral':2}
+          assert result['source_policy']=='fer2013-A-angry-happy-neutral-pixel-audit-v1'
+          assert result['max_epochs_per_seed']==80
+          assert result['early_stop_patience']==12
+          assert result['total_epochs_completed']==146
+          assert result['completed_stages']==30
+          assert result['test_evaluated'] is False
+          assert result['fpga_verified'] is False
+          assert result['int8_verified'] is False
+          assert result['phone_camera_verified'] is False
+          selected=result['per_seed']['20261021']
+          assert selected['epochs_trained']==78
+          assert selected['best_epoch']==68
+          assert 0.7844<selected['validation']['macro_f1']<0.7845
+          assert result['per_seed']['20261022']['epochs_trained']==68
+          best=root/'seed_20261021'/'best.pt'
+          assert best.is_file() and best.stat().st_size>100000
+          assert (root/'seed_20261022'/'best.pt').is_file()
+          (Path('/tmp/a-r1-best-checkpoint.txt')).write_text(str(best))
+          print('REAL MODEL A-R1 CHECKPOINT SELECTED:',best)
+          print('Frozen A-R1 validation Macro-F1:',selected['validation']['macro_f1'])
+          PY
+
+      - name: Install CPU-only model export dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy scikit-learn pillow onnx onnxruntime
+
+      - name: Assemble independent A Android project with correct three label order
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.build_android_camera_a_r1
+          python - <<'PY'
+          from pathlib import Path
+          code=Path('build/android-camera-a-r1/app/src/main/java/com/tyhuanga/fpga/camerac/MainActivity.java').read_text()
+          assert 'LABELS = {"😠 愤怒", "😊 开心", "😐 中性"}' in code
+          assert '😢 悲伤' not in code
+          assert 'model-a-r1-seed20261021.onnx' in code
+          assert 'cropRotatedFaceLuminance' in code
+          assert 'showScores' in code
+          print('Independent A-R1 Android camera source verified.')
+          PY
+
+      - name: Export genuine checkpoint to ONNX, numerically test real inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkpoint="$(cat /tmp/a-r1-best-checkpoint.txt)"
+          python -m tools.export_onnx_a_r1 --checkpoint "$checkpoint" --out-dir build/android-camera-a-r1/app/src/main/assets
+          python - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          a=Path('build/android-camera-a-r1/app/src/main/assets')
+          m=json.loads((a/'model-info.json').read_text())
+          assert m['seed']==20261021 and m['selected_epoch']==68
+          assert m['class_names']==['angry','happy','neutral']
+          assert m['class_map']=={'angry':0,'happy':1,'neutral':2}
+          assert m['onnx_torch_max_abs_diff']<0.0001
+          assert m['test_evaluated'] is False
+          assert m['phone_camera_verified'] is False
+          assert (a/'model.onnx').stat().st_size>100000
+          assert hashlib.sha256((a/'model.onnx').read_bytes()).hexdigest()==m['onnx_sha256']
+          print('Verified true A-R1 ONNX, no dummy weights, correct class mapping')
+          PY
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK API 35
+        shell: bash
+        run: |
+          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Compile actual local live front-camera APK
+        working-directory: build/android-camera-a-r1
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+
+      - name: Strictly verify model ONNX and class mapping exist inside INSTALLABLE APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,shutil
+          from zipfile import ZipFile
+          from pathlib import Path
+          output=Path('build/android-camera-a-r1/app/build/outputs/apk/debug/app-debug.apk')
+          assert output.is_file() and output.stat().st_size>1000000
+          with ZipFile(output) as archive:
+              assert 'assets/model.onnx' in archive.namelist()
+              assert 'assets/model-info.json' in archive.namelist()
+              raw=archive.read('assets/model.onnx')
+              info=json.loads(archive.read('assets/model-info.json'))
+              assert len(raw)>100000
+              assert info['class_names']==['angry','happy','neutral']
+              assert info['class_map']=={'angry':0,'happy':1,'neutral':2}
+              assert info['seed']==20261021 and info['selected_epoch']==68
+              assert 0.7844<info['validation_macro_f1']<0.7845
+              assert hashlib.sha256(raw).hexdigest()==info['onnx_sha256']
+              assert info['onnx_torch_max_abs_diff']<0.0001
+              print('APK verified: real selected A-R1 ONNX embedded; class order angry/happy/neutral')
+          dist=Path('dist')
+          dist.mkdir(exist_ok=True)
+          shutil.copyfile(output,dist/'Model-A-R1-Angry-Happy-Neutral-Live-Camera-Android.apk')
+          PY
+
+      - name: Archive real A-R1 Android realtime camera test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Model-A-R1-RealTime-Camera-Android-APK
+          path: dist/Model-A-R1-Angry-Happy-Neutral-Live-Camera-Android.apk
+          if-no-files-found: error
+          retention-days: 30
