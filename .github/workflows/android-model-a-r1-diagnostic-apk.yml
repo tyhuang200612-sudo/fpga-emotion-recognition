@@ -78,6 +78,7 @@ jobs:
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install numpy scikit-learn pillow onnx onnxruntime
 
+      # Re-run after Java luma collision and diagnostic builder self-test correction.
       - name: Assemble independent A Android project with correct three label order
         shell: bash
         run: |
