@@ -1,0 +1,198 @@
+name: "A-R2 anger-bias experimental anger-sensitivity x1-32 camera APK"
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/android-model-a-r2-bias-apk.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-a-r2-anger-bias-camera-apk
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout real A architecture and existing on-device Camera2 app
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 for A model conversion
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download genuine archived Kaggle A-R2 weights and histories (98 epochs)
+        uses: actions/download-artifact@v4
+        with:
+          name: FPGA-A-R2-Angry-Contrast-2Seeds-Max160-Real-Logs-Weights
+          run-id: '39541530063'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: trained-a-r2
+
+      - name: Verify frozen A-R2 result and identify best actual checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files=list(Path('trained-a-r2').rglob('results.json'))
+          assert len(files)==1,files
+          r=json.loads(files[0].read_text(encoding='utf-8'))
+          assert r['project']=='Model A: angry happy neutral'
+          assert r['training_family']=='A-R2'
+          assert r['class_names']==['angry','happy','neutral']
+          assert r['class_map']=={'angry':0,'happy':1,'neutral':2}
+          assert r['source_policy']=='fer2013-A-angry-happy-neutral-pixel-audit-v1'
+          assert r['seeds']==[20261021,20261022]
+          assert r['total_epochs_completed']==98 and r['max_epochs_per_seed']==80
+          assert abs(r['loss_weight']-.18)<1e-12
+          assert abs(r['negative_guard']-.35)<1e-12
+          assert r['original_a_r1_checkpoints_reused'] is False
+          assert r['no_automatic_deployment'] is True
+          assert r['pre_registered_upgrade_gate'] is False
+          assert r['test_evaluated'] is False and r['phone_camera_verified'] is False
+          assert r['fpga_verified'] is False and r['int8_verified'] is False
+          assert set(r['per_seed'])=={'20261021','20261022'}
+          assert all((files[0].parent/f'seed_{seed}'/'best.pt').is_file() for seed in r['seeds'])
+          chosen=max(r['seeds'],key=lambda seed:r['per_seed'][str(seed)]['validation']['macro_f1'])
+          print('A-R2 phone trial checkpoint:',chosen,'best epoch',r['per_seed'][str(chosen)]['best_epoch'])
+          print('WARNING: A-R2 failed upgrade gate: installable comparative test only.')
+          Path('/tmp/a-r2-results.txt').write_text(str(files[0]))
+          PY
+
+      - name: Install CPU-only model export dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy scikit-learn pillow onnx onnxruntime
+
+      - name: Build separate phone app with true angry/happy/neutral class order
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.build_android_camera_a_r2_bias
+          python - <<'PY'
+          from pathlib import Path
+          root=Path('build/android-camera-a-r2-bias')
+          java=(root/'app/src/main/java/com/tyhuanga/fpga/camerac/MainActivity.java').read_text()
+          gradle=(root/'app/build.gradle').read_text()
+          manifest=(root/'app/src/main/AndroidManifest.xml').read_text()
+          assert 'LABELS = {"😠 愤怒", "😊 开心", "😐 中性"}' in java
+          assert 'model-a-r2-trial.onnx' in java
+          assert '原始未平滑' in java and '平滑后预测' in java
+          assert '1.10f' in java and 'cropFactor=1.36f' in java
+          for marker in (
+              'ANGRY_MULTIPLIERS={1f,2f,4f,8f,16f,32f}',
+              'angryWeightIndex=2',
+              'adjustAngryScores(scores,multiplier)',
+              'weightedRawText.setText(String.format',
+              'rawText.setText(String.format',
+              '实验加权后预测',
+              'ema[i]=Float.isNaN(ema[i])?adjusted[i]',
+          ):
+              assert marker in java,marker
+          # Reversible score algebra; both screenshots require a large
+          # multiplier to flip: (0.705/0.024)=29.375, (.761/.043)=17.7
+          def changed(a,h,n,k):
+              z=k*a+h+n
+              return k*a/z,h/z,n/z
+          for a,h,n in ((.024,.271,.705),(.043,.761,.196)):
+              r=changed(a,h,n,1.)
+              assert abs(r[0]-a)<1e-6
+              assert abs(sum(changed(a,h,n,32.))-1.)<1e-6
+              assert max(changed(a,h,n,32.))==changed(a,h,n,32.)[0]
+          print('A-R2 postprocessing algebra checked: ×1 exact baseline, ×32 high-sensitivity trial.')
+          assert 'com.tyhuanga.fpga.cameraar2bias' in gradle
+          assert 'FPGA A-R2 愤怒权重实验' in manifest
+          assert 'android.permission.INTERNET' not in manifest
+          print('A-R2 camera trial app code validated; A-R1 preserved.')
+          PY
+      - name: Export real R2 checkpoint and independently verify ONNX vs PyTorch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.export_onnx_a_r2 --results "$(cat /tmp/a-r2-results.txt)" --out-dir build/android-camera-a-r2-bias/app/src/main/assets
+          python - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          a=Path('build/android-camera-a-r2-bias/app/src/main/assets')
+          m=json.loads((a/'model-info.json').read_text())
+          assert m['training_family']=='A-R2'
+          assert m['pre_registered_upgrade_gate'] is False
+          assert m['not_an_official_upgrade'] is True
+          assert m['class_names']==['angry','happy','neutral']
+          assert m['class_map']=={'angry':0,'happy':1,'neutral':2}
+          assert m['num_parameters']==60595
+          assert m['onnx_torch_max_abs_diff']<1e-4
+          assert m['test_evaluated'] is False
+          assert m['phone_camera_verified'] is False
+          raw=(a/'model.onnx').read_bytes()
+          assert len(raw)>100000 and hashlib.sha256(raw).hexdigest()==m['onnx_sha256']
+          print('Verified REAL A-R2 ONNX logit parity; not an automatic upgrade.')
+          PY
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK API 35
+        shell: bash
+        run: |
+          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Compile actual separate A-R2 anger-bias experimental realtime camera APK
+        working-directory: build/android-camera-a-r2-bias
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+
+      - name: Verify installable A-R2 sensitivity APK includes actual verified A-R2 ONNX checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,shutil
+          from pathlib import Path
+          from zipfile import ZipFile
+          apk=Path('build/android-camera-a-r2-bias/app/build/outputs/apk/debug/app-debug.apk')
+          assert apk.is_file() and apk.stat().st_size>1000000
+          with ZipFile(apk) as z:
+              assert 'assets/model.onnx' in z.namelist()
+              assert 'assets/model-info.json' in z.namelist()
+              raw=z.read('assets/model.onnx')
+              info=json.loads(z.read('assets/model-info.json'))
+              assert len(raw)>100000
+              assert info['training_family']=='A-R2'
+              assert info['not_an_official_upgrade'] is True
+              assert info['pre_registered_upgrade_gate'] is False
+              assert info['original_a_r1_checkpoints_reused'] is False
+              assert info['class_names']==['angry','happy','neutral']
+              assert info['class_map']=={'angry':0,'happy':1,'neutral':2}
+              assert info['seed'] in (20261021,20261022)
+              assert 1<=info['selected_epoch']<=80
+              assert info['onnx_torch_max_abs_diff']<1e-4
+              assert hashlib.sha256(raw).hexdigest()==info['onnx_sha256']
+              print('A-R2 ANGER WEIGHT TRIAL APK VERIFIED:',info['seed'],info['selected_epoch'],info['validation_macro_f1'])
+          Path('dist').mkdir(exist_ok=True)
+          shutil.copyfile(apk,'dist/Model-A-R2-Angry-Sensitivity-Experimental-Android.apk')
+          PY
+      - name: Archive real A-R2 anger-bias experimental realtime camera APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Model-A-R2-Angry-Sensitivity-Experimental-Android-APK
+          path: dist/Model-A-R2-Angry-Sensitivity-Experimental-Android.apk
+          if-no-files-found: error
+          retention-days: 30
