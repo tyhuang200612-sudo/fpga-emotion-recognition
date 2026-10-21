@@ -1,0 +1,163 @@
+name: "A-R2 experimental angry/happy/neutral Android camera trial APK"
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/android-a-r2-phone-trial.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fpga-a-r2-real-phone-trial-apk
+  cancel-in-progress: false
+
+jobs:
+  package-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Android source and exact FPGA Model A architecture
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download verified real A-R2 Kaggle best weights
+        uses: actions/download-artifact@v4
+        with:
+          name: FPGA-A-R2-Angry-Contrast-2Seeds-Max160-Real-Logs-Weights
+          run-id: '39541530063'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: trained-r2
+      - name: Verify actual A-R2 archive and strict three-class provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files=list(Path("trained-r2").rglob("results.json"))
+          assert len(files)==1,files
+          r=json.loads(files[0].read_text(encoding="utf-8"))
+          assert r["project"]=="Model A: angry happy neutral"
+          assert r["training_family"]=="A-R2"
+          assert r["class_names"]==["angry","happy","neutral"]
+          assert r["class_map"]=={"angry":0,"happy":1,"neutral":2}
+          assert r["source_policy"]=="fer2013-A-angry-happy-neutral-pixel-audit-v1"
+          assert r["seeds"]==[20261021,20261022]
+          assert r["total_epochs_completed"]==98
+          assert r["pre_registered_upgrade_gate"] is False
+          assert r["no_automatic_deployment"] is True
+          assert r["test_evaluated"] is False
+          assert r["phone_camera_verified"] is False
+          assert r["fpga_verified"] is False
+          assert r["int8_verified"] is False
+          for seed in r["seeds"]:
+              weight=files[0].parent/f"seed_{seed}"/"best.pt"
+              assert weight.is_file() and weight.stat().st_size>100000
+          best=max(r["seeds"],key=lambda seed:r["per_seed"][str(seed)]["validation"]["macro_f1"])
+          print("A-R2 chosen highest-validation-Macro-F1 seed:",best)
+          print("A-R2 validated metric:",r["per_seed"][str(best)]["validation"]["macro_f1"])
+          (Path("/tmp/r2-results-path.txt")).write_text(str(files[0]))
+          PY
+      - name: Install CPU-only PyTorch and ONNX exporter dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy pillow scikit-learn onnx onnxruntime
+      - name: Generate independent A-R2 camera trial Android app
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.build_android_camera_a_r2 --target build/android-camera-a-r2-trial
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("build/android-camera-a-r2-trial/app/src/main/java/com/tyhuanga/fpga/camerac/MainActivity.java")
+          s=p.read_text(encoding="utf-8")
+          assert 'LABELS = {"😠 愤怒", "😊 开心", "😐 中性"}' in s
+          assert "model-a-r2-trial.onnx" in s
+          assert "原始未平滑" in s
+          assert "A-R1" not in s
+          assert "1.10f" in s and "1.36f" in s
+          gradle=Path("build/android-camera-a-r2-trial/app/build.gradle").read_text(encoding="utf-8")
+          assert "applicationId 'com.tyhuanga.fpga.cameraar2trial'" in gradle
+          xml=Path("build/android-camera-a-r2-trial/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+          assert "android.permission.INTERNET" not in xml
+          print("A-R2 separate offline camera build verified")
+          PY
+      - name: Convert genuine A-R2 best seed PyTorch checkpoint to ONNX and verify logits parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.export_onnx_a_r2 --results "$(cat /tmp/r2-results-path.txt)" --out-dir build/android-camera-a-r2-trial/app/src/main/assets
+          python - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          assets=Path("build/android-camera-a-r2-trial/app/src/main/assets")
+          info=json.loads((assets/"model-info.json").read_text(encoding="utf-8"))
+          original=json.loads(Path("/tmp/r2-results-path.txt").read_text(encoding="utf-8") and Path(Path("/tmp/r2-results-path.txt").read_text()).read_text())
+          chosen=max(original["seeds"],key=lambda seed:original["per_seed"][str(seed)]["validation"]["macro_f1"])
+          assert info["training_family"]=="A-R2"
+          assert info["seed"]==chosen
+          assert info["selected_epoch"]==original["per_seed"][str(chosen)]["best_epoch"]
+          assert info["class_names"]==["angry","happy","neutral"]
+          assert info["class_map"]=={"angry":0,"happy":1,"neutral":2}
+          assert info["pre_registered_upgrade_gate"] is False
+          assert info["not_an_official_upgrade"] is True
+          assert info["phone_camera_verified"] is False
+          assert info["onnx_torch_max_abs_diff"]<1e-4
+          w=assets/"model.onnx"
+          assert w.stat().st_size>100000
+          assert hashlib.sha256(w.read_bytes()).hexdigest()==info["onnx_sha256"]
+          print("Real A-R2 weights verified and numerically matched with ONNX")
+          PY
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android API 35
+        run: |
+          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Setup Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Build Android Camera2 ONNX real camera trial APK
+        working-directory: build/android-camera-a-r2-trial
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+      - name: Inspect actual compiled APK to prevent mislabelled old weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          import json, hashlib, shutil
+          apk=Path("build/android-camera-a-r2-trial/app/build/outputs/apk/debug/app-debug.apk")
+          assert apk.is_file() and apk.stat().st_size>1000000
+          with ZipFile(apk) as z:
+              info=json.loads(z.read("assets/model-info.json"))
+              raw=z.read("assets/model.onnx")
+              assert len(raw)>100000
+              assert info["training_family"]=="A-R2"
+              assert info["class_names"]==["angry","happy","neutral"]
+              assert info["class_map"]=={"angry":0,"happy":1,"neutral":2}
+              assert info["not_an_official_upgrade"] is True
+              assert info["onnx_torch_max_abs_diff"]<1e-4
+              assert hashlib.sha256(raw).hexdigest()==info["onnx_sha256"]
+          Path("dist").mkdir(exist_ok=True)
+          target=Path("dist/Model-A-R2-Angry-Happy-Neutral-RealTime-Camera-Trial.apk")
+          shutil.copyfile(apk,target)
+          print("Verified genuine A-R2 APK ready:",target,target.stat().st_size)
+          PY
+      - name: Archive installable user-authorized A-R2 Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Model-A-R2-Angry-Happy-Neutral-RealTime-Camera-Trial-APK
+          path: dist/Model-A-R2-Angry-Happy-Neutral-RealTime-Camera-Trial.apk
+          if-no-files-found: error
+          retention-days: 30
