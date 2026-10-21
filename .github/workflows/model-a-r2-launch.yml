@@ -1,0 +1,102 @@
+name: "A-R2: safely launch angry-specific paired two-seed Kaggle GPU training"
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/model-a-r2-launch.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fpga-a-r2-angry-specific-single-gpu
+  cancel-in-progress: false
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      R1: tyhuanga/fpga-model-a-r1-angry-happy-neutral
+      R2: tyhuanga/fpga-model-a-r2-angry-contrast
+      CLEAN: tyhuanga/fpga-a-angry-happy-neutral-clean-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install Kaggle CLI
+        run: python -m pip install kaggle
+      - name: Refuse concurrent GPU, non-audited dataset and duplicate R2
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          old=$(kaggle kernels status "$R1" 2>&1 || true)
+          echo "REAL_A_R1=$old"
+          if ! echo "$old" | grep -Eq 'KernelWorkerStatus.COMPLETE'; then
+            echo "::error::Old R1 training must be verified COMPLETE before launching a successor."
+            exit 1
+          fi
+          present=$(kaggle datasets files "$CLEAN" 2>&1 || true)
+          if ! echo "$present" | grep -q 'train.csv' ||
+             ! echo "$present" | grep -q 'val.csv' ||
+             ! echo "$present" | grep -q 'quality-report.json'; then
+            echo "::error::Private audited A dataset not found; refuse training."
+            exit 1
+          fi
+          current=$(kaggle kernels status "$R2" 2>&1 || true)
+          echo "REAL_A_R2_PREEXISTING=$current"
+          if echo "$current" | grep -Eq 'KernelWorkerStatus\.(QUEUED|RUNNING|PENDING|CANCEL_REQUESTED|COMPLETE)'; then
+            echo "start=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::A-R2 already submitted, prevent duplicate GPU."
+            exit 0
+          fi
+          if echo "$current" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::Existing A-R2 failed or stopped; diagnose before retry."
+            exit 1
+          fi
+          if ! echo "$current" | grep -Eqi 'not found|404|does not exist|Kernel not found|No kernels|Cannot access kernel.*Permission.*kernels.get.*was denied'; then
+            echo "::error::Unknown A-R2 remote state; refuse duplicate job."
+            exit 1
+          fi
+          echo "start=true" >>"$GITHUB_OUTPUT"
+
+      - name: CPU test strict paired class logit gradients and Kaggle 32-cell script
+        if: steps.guard.outputs.start == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy pillow scikit-learn
+          python -m unittest discover -s tests -p 'test_model_a_r2.py' -v
+          python -m tools.build_kaggle_a_r2 --out build/kaggle_a_r2
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          folder=Path("build/kaggle_a_r2")
+          md=json.loads((folder/"kernel-metadata.json").read_text())
+          nb=json.loads((folder/md["code_file"]).read_text())
+          assert md["id"]=="tyhuanga/fpga-model-a-r2-angry-contrast"
+          assert md["is_private"] and md["enable_gpu"] and md["enable_internet"]
+          assert md["dataset_sources"]==[
+              "msambare/fer2013","tyhuanga/fpga-a-angry-happy-neutral-clean-v1"]
+          assert sum("a_epochs(5)" in "".join(c["source"]) for c in nb["cells"]
+                     if c["cell_type"]=="code")==32
+          assert 'A_R2_GITHUB_REFERENCE' in "".join(nb["cells"][2]["source"])
+          print("A-R2 PRECHECK VERIFIED: no GPU yet, paired 80 epochs and targeted anger gradients.")
+          PY
+
+      - name: Start one private real A-R2 Kaggle GPU run, with live logging
+        if: steps.guard.outputs.start == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p build/kaggle_a_r2 --accelerator NvidiaTeslaT4
+          status=$(kaggle kernels status "$R2" 2>&1 || true)
+          echo "REAL_A_R2_AFTER_SUBMISSION=$status"
+          if echo "$status" | grep -Eq 'KernelWorkerStatus\.(ERROR|CANCELLED|CANCEL_ACKNOWLEDGED)'; then
+            echo "::error::A-R2 immediately stopped on Kaggle."
+            exit 1
+          fi
+          echo "### A-R2: GPU task submitted (not a claim of epoch completion)" >>"$GITHUB_STEP_SUMMARY"
+          echo "Kaggle: https://www.kaggle.com/code/tyhuanga/fpga-model-a-r2-angry-contrast" >>"$GITHUB_STEP_SUMMARY"
+          echo "Live aggregate metrics: https://ntfy.sh/fpga-a-r2-20261021-d2b48c6af75e49e1a933b6a6d23cf7ef" >>"$GITHUB_STEP_SUMMARY"
