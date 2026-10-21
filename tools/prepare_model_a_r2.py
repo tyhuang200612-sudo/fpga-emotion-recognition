@@ -146,7 +146,11 @@ def render_a_r2_trainer(original:str)->str:
         src,'    print("A_TRAIN_LOG "+line,flush=True)',
         '    print("A_R2_TRAIN_LOG "+line,flush=True)'
     )
-    src=replace_once(src,'def a_seed(seed):',A_R2_LOSS_CODE+'\ndef a_seed(seed):')
+    src=replace_once(src,'def a_seed(seed):',
+        "A_R2_GITHUB_REFERENCE="+repr(A_R2_GITHUB_REFERENCE)+"\n"
+        +"A_R2_APPROVAL="+repr(A_R2_APPROVAL)+"\n"
+        +"A_R2_REFERENCE_MATRICES="+repr(A_R2_REFERENCE_MATRICES)+"\n"
+        +A_R2_LOSS_CODE+"\ndef a_seed(seed):")
     src=replace_once(
         src,
         '            loss=F.cross_entropy(logits,y,weight=s["weights"],label_smoothing=.03)',
