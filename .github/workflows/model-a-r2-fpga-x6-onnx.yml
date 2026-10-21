@@ -1,0 +1,64 @@
+name: "FPGA A-R2 x6: export validated calibrated ONNX for teammate"
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/model-a-r2-fpga-x6-onnx.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch frozen Kaggle-trained A-R2 archive from verified run
+        uses: actions/download-artifact@v4
+        with:
+          name: FPGA-A-R2-Angry-Contrast-2Seeds-Max160-Real-Logs-Weights
+          run-id: '39541530063'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: verified-R2
+      - name: CPU exact export dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy pillow scikit-learn onnx onnxruntime
+      - name: Export FC-angry + ln(6) to ONNX and verify PyTorch/ONNX equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          sources=list(Path('verified-R2').rglob('results.json'))
+          assert len(sources)==1,sources
+          Path('/tmp/r2-results.txt').write_text(str(sources[0]))
+          PY
+          python -m tools.export_fpga_model_a_r2_x6_onnx \
+            --results "$(cat /tmp/r2-results.txt)" --out dist
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('dist/Model-A-R2-ANGRY-x6-onnx-validation.json')
+          j=json.loads(p.read_text())
+          assert j['calibration_already_embedded'] is True
+          assert j['DO_NOT_APPLY_X6_TWICE'] is True
+          assert j['class_map']=={'angry':0,'happy':1,'neutral':2}
+          assert j['seed']==20261022 and j['epoch']==38
+          assert j['max_onnx_pytorch_logit_diff']<1e-4
+          assert j['max_softmax_equivalence_diff']<1e-5
+          assert j['fpga_quantized'] is False
+          print('FPGA TEAM HANDOFF ONNX READY; not bitstream')
+          PY
+      - name: Publish actual FP32 x6 ONNX, not board bitstream
+        uses: actions/upload-artifact@v4
+        with:
+          name: FPGA-A-R2-ANGRY-x6-FP32-Calibrated-ONNX-Verified
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
