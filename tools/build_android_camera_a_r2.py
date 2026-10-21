@@ -25,8 +25,8 @@ def build_r2_trial(source:Path,target:Path)->Path:
 
     replace_one(java,"Model A-R1 · 摄像头诊断版",
                 "Model A-R2 · 实时对比试用版")
-    replace_one(java,"Seed 20261021 · 前置摄像头",
-                "双种子最佳权重 · 前置摄像头")
+    replace_one(java,"同一模型 · 对照裁剪与亮度 · 不改权重",
+                "A-R2 双种子最佳权重 · 对照裁剪与亮度")
     replace_one(java,"正在载入 A-R1 模型…",
                 "正在载入 A-R2 试验模型…")
     replace_one(java,"本测试使用真实 A-R1 模型的 FP32 推理",
