@@ -136,7 +136,7 @@ def create_diagnostic(source:Path,target:Path)->Path:
     for must in (
         "cropFactor=1.36f","cropFactor-1.36f","1.10f",
         "limitedYuv=!limitedYuv","showScores(prob,avg)",
-        "studioYuv","(luma-16f)/219f",
+        "studioYuv","(pixelY-16f)/219f",
         "原始未平滑","平滑后预测","Arrays.fill(ema,Float.NaN)",
         "cropRotatedFaceLuminance(image,face.getBoundingBox(),imageRotation(),cropFactor,limitedYuv)"
     ):
