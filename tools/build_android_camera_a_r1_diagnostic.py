@@ -87,9 +87,9 @@ def create_diagnostic(source:Path,target:Path)->Path:
     text=replace_once(text,"*1.36f;","*factor;")
     text=replace_once(text,
         '                data[yi*48+xi]=((a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy)/255f;',
-        """                float luma=((a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy);
+        """                float pixelY=((a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy);
                 data[yi*48+xi]=studioYuv
-                    ? clamp((luma-16f)/219f,0f,1f) : luma/255f;""")
+                    ? clamp((pixelY-16f)/219f,0f,1f) : pixelY/255f;""")
     text=replace_once(text,"    private void showScores(float[] scores) {",
         """    private void refreshDiagnosticSettings() {
         if(modeText==null || cropButton==null || luminanceButton==null)return;
