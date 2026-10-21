@@ -1,4 +1,5 @@
 name: "A-R1 Diagnostic Android APK (live crop + luminance + raw probabilities)"
+# Rebuild after fixing sampled-luminance variable name and diagnostic assertion.
 
 on:
   push:
